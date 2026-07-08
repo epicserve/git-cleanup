@@ -1,0 +1,35 @@
+[project]
+name = "git-cleanup"
+version = "0.1.0"
+description = "Interactively clean up merged, done, and stale git branches using your issue tracker"
+readme = "README.md"
+authors = [
+    { name = "Brent O'Connor", email = "epicserve@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "httpx>=0.28",
+    "rich>=13",
+    "questionary>=2",
+]
+
+[project.scripts]
+git-cleanup = "git_cleanup.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "respx>=0.22",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
