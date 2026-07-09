@@ -52,6 +52,8 @@ def format_age(days: int) -> str:
     """Format an age in days as years/months/days, e.g. '2y 6m 9d'."""
     years, rest = divmod(days, 365)
     months, day_part = divmod(rest, 30)
+    if months == 12:  # 365/30 remainder quirk: never show "12m"
+        years, months = years + 1, 0
     parts = []
     if years:
         parts.append(f"{years}y")
@@ -62,34 +64,80 @@ def format_age(days: int) -> str:
     return " ".join(parts)
 
 
-def _sync_label(b: BranchInfo) -> str:
-    """Ahead/behind of the local branch vs its upstream."""
+def _sync_text(b: BranchInfo) -> str:
+    """Ahead/behind of the local branch vs its upstream, as plain text."""
     if not b.has_local:
         return ""
     if b.upstream_gone:
-        return "[red]gone[/red]"
+        return "gone"
     if b.ahead is None:
-        return "[dim]—[/dim]"  # no upstream
+        return "—"  # no upstream
     parts = []
     if b.ahead:
-        parts.append(f"[yellow]↑{b.ahead}[/yellow]")
+        parts.append(f"↑{b.ahead}")
     if b.behind:
         parts.append(f"↓{b.behind}")
-    return " ".join(parts) if parts else "[green]✓[/green]"
+    return " ".join(parts) if parts else "✓"
 
 
-def _describe(b: BranchInfo) -> str:
-    reasons = []
-    if b.merged:
-        reasons.append("merged")
-    if b.issue_done and b.issue:
-        reasons.append(f"{b.issue.key} {b.issue.status}")
-    if not reasons and b.issue:
-        reasons.append(f"{b.issue.key} {b.issue.status}")
-    if b.has_unpushed:
-        reasons.append(f"↑{b.ahead} unpushed")
-    reasons.append(format_age(b.age_days))
-    return f"{b.name}  ({', '.join(reasons)})"
+_SYNC_STYLES = {"gone": "red", "—": "dim", "✓": "green"}
+
+
+def _sync_label(b: BranchInfo) -> str:
+    """Sync state styled for the rich overview table."""
+    text = _sync_text(b)
+    if not text:
+        return ""
+    style = "yellow" if text.startswith("↑") else _SYNC_STYLES.get(text, "")
+    return f"[{style}]{text}[/{style}]" if style else text
+
+
+def _truncate(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+# questionary renders checkbox rows as e.g. " ❯ ◉ <title>" — 5 columns of
+# pointer/marker before the title — and separators with a 3-space indent, so
+# the header separator needs 2 extra columns to line up with choice titles
+_CHOICE_INDENT = 5
+_HEADER_PAD = " " * 2
+
+
+def _choice_rows(branches: Sequence[BranchInfo]) -> tuple[str, list[str]]:
+    """Format branches as aligned columns for checkbox choices.
+
+    Returns (header, rows); rows[i] corresponds to branches[i].
+    """
+    headers = ("BRANCH", "SYNC", "AUTHOR", "AGE", "MRG", "ISSUE", "STATUS")
+    fixed_caps = (40, 8, 16, 12, 3, 12, 16)
+    cells = [
+        (
+            b.name,
+            _sync_text(b),
+            b.author_name,
+            format_age(b.age_days),
+            "✓" if b.merged else "",
+            b.issue_key or "—",
+            (b.issue.status if b.issue else "—"),
+        )
+        for b in branches
+    ]
+
+    widths = [
+        min(cap, max(len(header), *(len(row[col]) for row in cells)))
+        for col, (header, cap) in enumerate(zip(headers, fixed_caps, strict=True))
+    ]
+    # shrink the branch column if the terminal is narrow (2-space gutters)
+    other = sum(widths[1:]) + 2 * len(widths) + _CHOICE_INDENT
+    widths[0] = max(20, min(widths[0], console.width - other))
+
+    def fmt(row: tuple[str, ...]) -> str:
+        return "  ".join(
+            _truncate(value, width).ljust(width)
+            for value, width in zip(row, widths, strict=True)
+        ).rstrip()
+
+    return fmt(headers), [fmt(row) for row in cells]
 
 
 def _interactive() -> bool:
@@ -107,9 +155,13 @@ def select_branches(
     """Checkbox multi-select; every recommendation can be unselected."""
     if not _interactive():
         return []
-    choices = [
-        questionary.Choice(title=_describe(b), value=b, checked=preselect)
-        for b in branches
+    header, rows = _choice_rows(branches)
+    choices: list[questionary.Separator | questionary.Choice] = [
+        questionary.Separator(_HEADER_PAD + header)
+    ]
+    choices += [
+        questionary.Choice(title=row, value=b, checked=preselect)
+        for row, b in zip(rows, branches, strict=True)
     ]
     selected = questionary.checkbox(message, choices=choices).ask()
     return selected or []
