@@ -142,6 +142,9 @@ class CleanupApp(App[list[Decision] | None]):
     """One table of all branches; mark each row keep/delete/archive."""
 
     TITLE = "git-cleanup"
+    # ctrl+p is swallowed by VS Code's terminal (Quick Open); ctrl+k is the
+    # conventional palette shortcut elsewhere (Slack, browsers, Linear)
+    COMMAND_PALETTE_BINDING = "ctrl+k"
 
     BINDINGS = [
         Binding("space", "cycle", "Cycle action"),
