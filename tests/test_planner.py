@@ -4,7 +4,7 @@ import pytest
 
 from git_cleanup import planner
 from git_cleanup.gitops import RawRef
-from git_cleanup.models import IssueInfo, IssueState
+from git_cleanup.models import Action, IssueInfo, IssueState
 
 ME = "brent@example.com"
 OTHER = "sarah@example.com"
@@ -94,43 +94,41 @@ def make_branches():
     return build(refs, merged)
 
 
-def test_my_local_cleanup():
-    branches = make_branches()
-    assert [b.name for b in planner.my_local_cleanup(branches, ME)] == ["abc-1-merged"]
+def test_recommend_actions_mine():
+    recs = planner.recommend_actions(make_branches(), for_email=ME, archive_age_days=90)
+    assert recs == {
+        "abc-1-merged": Action.DELETE,
+        "old-thing": Action.ARCHIVE,
+    }
 
 
-def test_remote_cleanup_mine_only_vs_all():
-    branches = make_branches()
-    assert [b.name for b in planner.remote_cleanup(branches, ME)] == ["abc-1-merged"]
-    assert [b.name for b in planner.remote_cleanup(branches, ME, include_all=True)] == [
-        "abc-1-merged",
-        "abc-3-theirs",
-    ]
+def test_recommend_actions_include_all():
+    recs = planner.recommend_actions(
+        make_branches(), for_email=ME, include_all=True, archive_age_days=90
+    )
+    assert recs["abc-3-theirs"] is Action.DELETE  # sarah's merged branch
 
 
-def test_issue_done_makes_eligible():
+def test_recommend_actions_team_report():
+    # for_email=None recommends across all authors — the CI report case
+    recs = planner.recommend_actions(make_branches(), archive_age_days=90)
+    assert recs["abc-1-merged"] is Action.DELETE
+    assert recs["abc-3-theirs"] is Action.DELETE
+    assert recs["old-thing"] is Action.ARCHIVE
+
+
+def test_recommend_actions_issue_done_makes_deletable():
     branches = make_branches()
     open_branch = next(b for b in branches if b.name == "abc-2-open")
     open_branch.issue_key = "ABC-2"
     open_branch.issue = IssueInfo("ABC-2", "x", "Done", IssueState.DONE, "u")
-    assert [b.name for b in planner.my_local_cleanup(branches, ME)] == [
-        "abc-1-merged",
-        "abc-2-open",
-    ]
+    recs = planner.recommend_actions(branches, for_email=ME, archive_age_days=90)
+    assert recs["abc-2-open"] is Action.DELETE
 
 
-def test_archive_candidates_excludes_selected_and_recent():
-    branches = make_branches()
-    selected = planner.my_local_cleanup(branches, ME)
-    candidates = planner.archive_candidates(branches, selected, age_days=90)
-    assert [b.name for b in candidates] == ["old-thing"]
-
-
-def test_archive_candidates_never_protected():
-    branches = make_branches()
-    candidates = planner.archive_candidates(branches, [], age_days=0)
-    names = {b.name for b in candidates}
-    assert "main" not in names
+def test_recommend_actions_never_protected():
+    recs = planner.recommend_actions(make_branches(), archive_age_days=0)
+    assert "main" not in recs
 
 
 def test_parse_sort():

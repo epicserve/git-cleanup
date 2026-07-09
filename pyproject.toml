@@ -10,7 +10,7 @@ requires-python = ">=3.14"
 dependencies = [
     "httpx>=0.28",
     "rich>=13",
-    "questionary>=2",
+    "textual>=8.2.8",
 ]
 
 [project.scripts]
@@ -19,6 +19,7 @@ git-cleanup = "git_cleanup.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-asyncio>=1.4.0",
     "respx>=0.22",
     "ruff>=0.8",
 ]
@@ -33,3 +34,4 @@ target-version = "py314"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

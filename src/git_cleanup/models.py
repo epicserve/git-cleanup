@@ -13,6 +13,12 @@ class IssueState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class Action(StrEnum):
+    KEEP = "keep"
+    DELETE = "delete"
+    ARCHIVE = "archive"
+
+
 @dataclass(frozen=True)
 class IssueInfo:
     key: str

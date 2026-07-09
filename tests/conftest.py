@@ -27,7 +27,13 @@ def git(*args: str, cwd: Path, env: dict[str, str] | None = None) -> str:
     if env:
         full_env.update(env)
     result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, env=full_env
+        # never sign in tests — the user's signing agent (e.g. 1Password) may
+        # prompt or be locked, hanging or failing the suite
+        ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=full_env,
     )
     assert result.returncode == 0, f"git {' '.join(args)}: {result.stderr}"
     return result.stdout.strip()

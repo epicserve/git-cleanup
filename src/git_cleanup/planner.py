@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterable, Sequence
 
 from git_cleanup.gitops import RawRef
-from git_cleanup.models import BranchInfo, IssueInfo
+from git_cleanup.models import Action, BranchInfo, IssueInfo
 
 
 def build_branches(
@@ -212,39 +212,27 @@ def filter_branches(
     return [b for b in branches if all(_matches(b, t, my_email) for t in terms)]
 
 
-def my_local_cleanup(branches: Iterable[BranchInfo], my_email: str) -> list[BranchInfo]:
-    """Group A: your local branches that are merged or issue-done."""
-    return [
-        b
-        for b in branches
-        if b.has_local and b.cleanup_eligible and b.is_mine(my_email)
-    ]
-
-
-def remote_cleanup(
+def recommend_actions(
     branches: Iterable[BranchInfo],
-    my_email: str,
+    *,
+    for_email: str | None = None,
     include_all: bool = False,
-) -> list[BranchInfo]:
-    """Group B: branches on origin that are no longer needed."""
-    return [
-        b
-        for b in branches
-        if b.has_remote and b.cleanup_eligible and (include_all or b.is_mine(my_email))
-    ]
+    archive_age_days: int,
+) -> dict[str, Action]:
+    """Recommend a non-keep action per branch name.
 
-
-def archive_candidates(
-    branches: Iterable[BranchInfo],
-    already_selected: Iterable[BranchInfo],
-    age_days: int,
-) -> list[BranchInfo]:
-    """Group C: old branches not already up for deletion, worth archiving."""
-    selected_names = {b.name for b in already_selected}
-    return [
-        b
-        for b in branches
-        if b.name not in selected_names
-        and not (b.is_current or b.is_default or b.is_protected)
-        and b.age_days >= age_days
-    ]
+    DELETE: merged or issue-done, authored by `for_email` (any author when
+    include_all is set or for_email is None — the team-report case).
+    ARCHIVE: not deletable but older than archive_age_days.
+    Protected, current, and default branches are never recommended.
+    """
+    recommendations: dict[str, Action] = {}
+    for b in branches:
+        if b.is_current or b.is_default or b.is_protected:
+            continue
+        anyone = include_all or for_email is None
+        if b.cleanup_eligible and (anyone or b.is_mine(for_email)):
+            recommendations[b.name] = Action.DELETE
+        elif b.age_days >= archive_age_days:
+            recommendations[b.name] = Action.ARCHIVE
+    return recommendations

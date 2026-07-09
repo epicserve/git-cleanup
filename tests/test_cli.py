@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from git_cleanup import cli, ui
+from git_cleanup import cli, planner, tui
+from git_cleanup.models import Action
 from tests.conftest import git
 
 
@@ -14,20 +15,29 @@ def no_tracker_config(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def answer_prompts(monkeypatch):
-    """Select everything offered, confirm everything, record the prompts."""
-    seen: dict[str, list] = {"selections": [], "confirms": []}
+def accept_recommended(monkeypatch):
+    """Simulate a TUI session that confirms every recommendation, plus
+    archiving old-experiment (the per-branch archive choice)."""
+    seen: dict[str, list] = {"branches": [], "kwargs": []}
 
-    def fake_select(branches, message, preselect):
-        seen["selections"].append((message, [b.name for b in branches], preselect))
-        return list(branches)
+    def fake_run_tui(branches, *, my_email, include_all, archive_age_days, **kwargs):
+        seen["branches"].append([b.name for b in branches])
+        seen["kwargs"].append(kwargs)
+        recommended = planner.recommend_actions(
+            branches,
+            for_email=my_email,
+            include_all=include_all,
+            archive_age_days=archive_age_days,
+        )
+        by_name = {b.name: b for b in branches}
+        return [
+            (by_name[name], action)
+            for name, action in recommended.items()
+            if action is Action.DELETE or name == "old-experiment"
+        ]
 
-    def fake_confirm(message, default=False):
-        seen["confirms"].append(message)
-        return True
-
-    monkeypatch.setattr(ui, "select_branches", fake_select)
-    monkeypatch.setattr(ui, "confirm", fake_confirm)
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(tui, "run_tui", fake_run_tui)  # cli.tui is this module
     return seen
 
 
@@ -36,27 +46,25 @@ def run_cli(*argv: str) -> int:
     return cli.run(args)
 
 
-def test_full_run_deletes_and_archives(repo, no_tracker_config, answer_prompts, monkeypatch):
+def test_full_run_deletes_and_archives(repo, no_tracker_config, accept_recommended, monkeypatch):
     monkeypatch.chdir(repo)
     code = run_cli("--config", str(no_tracker_config))
     assert code == 0
 
-    # Group A: my merged local branch deleted
+    # my merged branch deleted locally and on origin
     assert git("branch", "--list", "abc-123-fix-login", cwd=repo) == ""
-    # Group B: same branch deleted on origin (extra confirm was shown)
     assert git("ls-remote", "--heads", "origin", "abc-123-fix-login", cwd=repo) == ""
-    assert any("origin" in m for m in answer_prompts["confirms"])
-    # Group C: old local-only branch archived (tag created, branch gone)
+    # old local-only branch archived (tag created, branch gone)
     assert "archive/old-experiment" in git("tag", "--list", "archive/*", cwd=repo)
     assert git("branch", "--list", "old-experiment", cwd=repo) == ""
 
-    # Untouched: default branch, unmerged recent work, other author's branch
+    # untouched: default branch, unmerged recent work, other author's branch
     assert git("branch", "--list", "main", cwd=repo) != ""
     assert git("branch", "--list", "abc-201-new-dashboard", cwd=repo) != ""
     assert git("ls-remote", "--heads", "origin", "abc-99-hotfix", cwd=repo) != ""
 
 
-def test_dry_run_changes_nothing(repo, no_tracker_config, answer_prompts, monkeypatch):
+def test_dry_run_changes_nothing(repo, no_tracker_config, accept_recommended, monkeypatch):
     monkeypatch.chdir(repo)
     code = run_cli("--dry-run", "--config", str(no_tracker_config))
     assert code == 0
@@ -67,22 +75,35 @@ def test_dry_run_changes_nothing(repo, no_tracker_config, answer_prompts, monkey
     assert git("tag", "--list", "archive/*", cwd=repo) == ""
 
 
-def test_all_flag_includes_other_authors_remote(repo, no_tracker_config, answer_prompts, monkeypatch):
+def test_all_flag_includes_other_authors_remote(
+    repo, no_tracker_config, accept_recommended, monkeypatch
+):
     monkeypatch.chdir(repo)
     code = run_cli("--all", "--config", str(no_tracker_config))
     assert code == 0
-    # sarah's merged remote-only branch is offered and deleted with --all
+    # sarah's merged remote-only branch is recommended and deleted with --all
     assert git("ls-remote", "--heads", "origin", "abc-99-hotfix", cwd=repo) == ""
 
 
-def test_unselecting_everything_deletes_nothing(repo, no_tracker_config, monkeypatch):
+def test_quit_tui_changes_nothing(repo, no_tracker_config, monkeypatch):
     monkeypatch.chdir(repo)
-    monkeypatch.setattr(ui, "select_branches", lambda branches, message, preselect: [])
-    monkeypatch.setattr(ui, "confirm", lambda message, default=False: False)
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(cli.tui, "run_tui", lambda *a, **kw: None)
     code = run_cli("--config", str(no_tracker_config))
     assert code == 0
     assert git("branch", "--list", "abc-123-fix-login", cwd=repo) != ""
     assert git("ls-remote", "--heads", "origin", "abc-123-fix-login", cwd=repo) != ""
+
+
+def test_non_tty_skips_tui_and_changes_nothing(repo, no_tracker_config, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    # no _interactive patch: pytest's stdin is not a TTY
+    code = run_cli("--config", str(no_tracker_config))
+    assert code == 0
+    assert git("branch", "--list", "abc-123-fix-login", cwd=repo) != ""
+    out = capsys.readouterr().out
+    # overview table printed (rich may fold long names, so match short pieces)
+    assert "Branches" in out and "abc-123" in out
 
 
 def test_invalid_sort_fails_fast(repo, no_tracker_config, monkeypatch):
@@ -90,7 +111,7 @@ def test_invalid_sort_fails_fast(repo, no_tracker_config, monkeypatch):
     assert run_cli("--sort", "bogus", "--config", str(no_tracker_config)) == 2
 
 
-def test_sort_flag_accepted(repo, no_tracker_config, answer_prompts, monkeypatch):
+def test_sort_flag_accepted(repo, no_tracker_config, accept_recommended, monkeypatch):
     monkeypatch.chdir(repo)
     # descending specs must use the = form: --sort=-age (argparse reads a bare
     # "-age" token as a flag)
@@ -102,13 +123,13 @@ def test_invalid_filter_fails_fast(repo, no_tracker_config, monkeypatch):
     assert run_cli("--filter", "age>abc", "--config", str(no_tracker_config)) == 2
 
 
-def test_filter_restricts_cleanup_groups(repo, no_tracker_config, answer_prompts, monkeypatch):
+def test_filter_restricts_tui_branches(repo, no_tracker_config, accept_recommended, monkeypatch):
     monkeypatch.chdir(repo)
-    # filter matches nothing deletable, so select-all prompts get empty groups
     code = run_cli("--filter", "author=nobody", "--config", str(no_tracker_config))
     assert code == 0
+    # nothing matched the filter, so the TUI received no branches to act on
+    assert accept_recommended["branches"] == [[]]
     assert git("branch", "--list", "abc-123-fix-login", cwd=repo) != ""
-    assert git("ls-remote", "--heads", "origin", "abc-123-fix-login", cwd=repo) != ""
 
 
 def test_outside_repo_fails_cleanly(tmp_path, monkeypatch):

@@ -6,11 +6,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from git_cleanup import __version__, gitops, planner, ui
+from git_cleanup import __version__, gitops, planner, tui, ui
 from git_cleanup.config import Config, load_config
+from git_cleanup.core import scan_repo
 from git_cleanup.gitops import GitError
-from git_cleanup.models import BranchInfo
-from git_cleanup.trackers import get_tracker
+from git_cleanup.models import Action, BranchInfo
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -146,101 +150,49 @@ def run(args: argparse.Namespace) -> int:
 
     if args.no_fetch:
         ui.info("[dim]skipping fetch (--no-fetch)[/dim]")
-    else:
-        with ui.console.status("Fetching and pruning origin..."):
-            gitops.fetch_prune()
-        ui.info("[green]✓[/green] Fetched and pruned origin")
+    with ui.console.status("Scanning branches..."):
+        scan = scan_repo(config, fetch=not args.no_fetch)
+    summary = f"[green]✓[/green] Found {len(scan.branches)} branches"
+    if scan.issues_found:
+        summary += f" · {scan.issues_found} issues looked up"
+    ui.info(summary)
 
-    default = gitops.get_default_branch()
-    current = gitops.get_current_branch()
-    my_email = gitops.get_user_email()
-
-    refs = gitops.list_refs()
-    merged = gitops.merged_ref_names(default)
-    branches = planner.build_branches(
-        refs,
-        merged,
-        current=current,
-        default=default,
-        protected=config.protected_branches,
-    )
-
-    tracker = get_tracker(config)
-    if tracker is not None:
-        keys = planner.extract_keys(branches, tracker.extract_key)
-        if keys:
-            with ui.console.status("Looking up issues..."):
-                issues = tracker.fetch_issues(keys)
-            planner.attach_issues(branches, issues)
-            ui.info(
-                f"[green]✓[/green] Found {len(branches)} branches · "
-                f"{len(issues)} issues looked up"
-            )
-    else:
-        ui.info(f"[green]✓[/green] Found {len(branches)} branches")
-
+    branches = scan.branches
     if filter_terms:
         total = len(branches)
-        branches = planner.filter_branches(branches, filter_terms, my_email)
+        branches = planner.filter_branches(branches, filter_terms, scan.user_email)
         ui.info(f"[dim]filter matched {len(branches)} of {total} branches[/dim]")
-
     branches = planner.sort_branches(branches, sort_fields)
-    ui.render_branch_table(branches)
 
+    if not _interactive():
+        ui.render_branch_table(branches)
+        ui.warn("stdin is not a terminal; skipping interactive cleanup")
+        return 0
+
+    decisions = tui.run_tui(
+        branches,
+        my_email=scan.user_email,
+        include_all=args.all,
+        archive_age_days=config.archive_age_days,
+        sort_fields=sort_fields,
+        filter_spec=args.filter,
+        dry_run=args.dry_run,
+    )
+    if decisions is None:
+        ui.info("Aborted; no changes made.")
+        return 0
+
+    current, default = scan.current_branch, scan.default_branch
     deleted_local = deleted_remote = archived = 0
-    processed: list[BranchInfo] = []
-
-    # Group A: your local branches that are merged or issue-done
-    group_a = planner.my_local_cleanup(branches, my_email)
-    if group_a:
-        selected = ui.select_branches(
-            group_a,
-            f"Delete {len(group_a)} of your local branches (merged or issue done)? "
-            "[space to toggle]",
-            preselect=True,
-        )
-        for branch in selected:
-            if _protect(branch, current, default, config):
-                continue
-            if _delete_local(branch, dry_run=args.dry_run):
+    for branch, action in decisions:
+        if _protect(branch, current, default, config):
+            continue
+        if action is Action.DELETE:
+            if branch.has_local and _delete_local(branch, dry_run=args.dry_run):
                 deleted_local += 1
-                processed.append(branch)
-    else:
-        ui.info("No local branches of yours need cleanup.")
-
-    # Group B: remote branches on origin that are no longer needed
-    group_b = planner.remote_cleanup(branches, my_email, include_all=args.all)
-    if group_b:
-        selected = ui.select_branches(
-            group_b,
-            f"Delete {len(group_b)} branches on origin? [space to toggle]",
-            preselect=True,
-        )
-        if selected and (
-            args.dry_run
-            or ui.confirm("This will delete branches on origin. Continue?", default=False)
-        ):
-            for branch in selected:
-                if _protect(branch, current, default, config):
-                    continue
-                if _delete_remote(branch, dry_run=args.dry_run):
-                    deleted_remote += 1
-                    processed.append(branch)
-    else:
-        ui.info("No remote branches need cleanup.")
-
-    # Group C: archive old branches you want to keep but won't work on
-    group_c = planner.archive_candidates(branches, processed, config.archive_age_days)
-    if group_c:
-        selected = ui.select_branches(
-            group_c,
-            f"Archive old branches (≥{config.archive_age_days}d)? "
-            "Creates tag archive/<name>, then deletes the branch.",
-            preselect=False,
-        )
-        for branch in selected:
-            if _protect(branch, current, default, config):
-                continue
+            if branch.has_remote and _delete_remote(branch, dry_run=args.dry_run):
+                deleted_remote += 1
+        elif action is Action.ARCHIVE:
             if _archive(branch, dry_run=args.dry_run):
                 archived += 1
 

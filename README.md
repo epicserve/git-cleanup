@@ -3,19 +3,34 @@
 Interactively clean up git branches that are merged, done in your issue tracker, or stale.
 
 `git-cleanup` fetches and prunes `origin`, gathers every local and remote branch (author,
-age, merged status, ahead/behind counts vs upstream, and linked issue status), then walks
-you through three prompts:
+age, merged status, ahead/behind counts vs upstream, and linked issue status), then opens
+a full-screen TUI: one table of all branches where each row carries an action you control.
 
-1. **Delete your local branches** that are merged or whose issue is done — pre-checked,
-   unselect anything you want to keep.
-2. **Delete branches on origin** that are no longer needed — with an extra confirmation
-   before anything remote is touched.
-3. **Archive old branches** you want to keep but won't work on — creates a tag
-   `archive/<branch>` at the tip, then deletes the branch. Restore any time with
-   `git checkout -b <branch> archive/<branch>`.
+- **delete** — removes the branch locally and on origin (whatever exists). Your branches
+  that are merged or whose issue is done come pre-marked.
+- **archive** — creates a tag `archive/<branch>` at the tip (pushed for remote branches),
+  then deletes the branch. Restore any time with `git checkout -b <branch> archive/<branch>`.
+- **keep** — the default; nothing happens.
+
+Press Enter to review everything grouped (with a prominent warning for anything deleted
+on origin), confirm, and it executes. Quit with `q` and nothing changes.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| ↑/↓, PgUp/PgDn | Move |
+| `space` | Cycle keep → delete → archive |
+| `d` / `a` / `k` | Mark delete / archive / keep |
+| `/` | Live filter (same syntax as `--filter`) |
+| `s` | Live sort (same syntax as `--sort`) |
+| `Enter` | Review and confirm |
+| `q` / `Esc` | Quit without changes |
 
 Jira is the built-in issue tracker for now; the provider layer is designed so GitHub
-Issues, Linear, etc. can be added later.
+Issues, Linear, etc. can be added later. The scan pipeline (`git_cleanup.core.scan_repo`
++ `planner.recommend_actions`) is UI-free and importable, so CI jobs can generate branch
+reports from the same data.
 
 ## Usage
 
@@ -30,7 +45,7 @@ $ uvx git-cleanup --dry-run  # preview everything, change nothing
 |---|---|
 | `--dry-run` | Full run with zero mutations — prints `[dry-run] would delete ...` instead |
 | `--no-fetch` | Skip the initial `git fetch --prune origin` |
-| `--all` | Include branches authored by others in the cleanup prompts |
+| `--all` | Pre-mark other authors' cleanup-eligible branches for deletion too |
 | `--sort COLS` | Sort columns, comma-separated, `-` prefix for descending — e.g. `--sort=-age,status,author`. Columns: `branch`, `local`, `remote`, `sync`, `author`, `age`, `merged`, `issue`, `status` |
 | `--filter TERMS` | Only show branches matching all terms — e.g. `--filter 'mine,age>6m,status!=done'`. A bare word matches any text column (`--filter brent`). Flags: `mine`, `merged`, `local`, `remote`, `gone` (prefix `!` to negate); `age>N`/`age<N`/`age>=N`/`age<=N` in days or with `d`/`m`/`y` suffix; substring matches `branch=X`, `author=X`, `issue=X`, `status=X` (`!=` excludes). Quote specs containing `>` or `!` |
 | `--config PATH` | Use an alternate config file |
@@ -41,10 +56,13 @@ branch name, case-insensitively. Branches without a key just show no issue info.
 
 ## Safety
 
-- The current branch, the default branch, and protected branches are never offered
+- The current branch, the default branch, and protected branches can never be marked
   for deletion or archiving.
-- Every prompt is a checkbox list — nothing is deleted without your selection.
-- Remote deletion always requires a second explicit confirmation.
+- Nothing happens until you review the grouped summary and confirm it; quitting the
+  TUI changes nothing.
+- Remote deletions are called out in their own red-bordered warning on the review
+  screen, and local deletions that would lose unpushed commits are flagged.
+- Non-interactive runs (pipes, CI) never mutate anything — they print the table and exit.
 - If Jira is unreachable or unconfigured, the tool degrades to git-only info
   (merged status still works).
 
