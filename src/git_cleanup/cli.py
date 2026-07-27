@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from git_cleanup import __version__, gitops, planner, tui, ui
+from git_cleanup import __version__, gitops, planner, state, tui, ui
 from git_cleanup.config import Config, load_config
 from git_cleanup.core import scan_repo
 from git_cleanup.gitops import GitError
@@ -42,24 +42,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sort",
-        default="branch",
+        default=None,
         metavar="COLS",
         help=(
             "comma-separated sort columns, '-' prefix for descending; use the '=' form "
             f"for descending specs (e.g. --sort=-age,status); columns: "
-            f"{', '.join(planner.SORT_COLUMNS)}"
+            f"{', '.join(planner.SORT_COLUMNS)}; default: your last-used sort in this "
+            f"repo, else {planner.DEFAULT_SORT}"
         ),
     )
     parser.add_argument(
         "--filter",
-        default="",
+        default=None,
         metavar="TERMS",
         help=(
             "comma-separated filter terms, all must match; a bare word matches any text "
             "column (e.g. --filter brent); flags: mine, merged, local, remote, gone "
             "(prefix ! to negate); age>N/age<N (days, or 6m/1y); column=value substring "
             "match (branch, author, issue, status; != excludes). Quote specs containing "
-            "> or ! (e.g. --filter 'mine,age>6m,status!=done')"
+            "> or ! (e.g. --filter 'mine,age>6m,status!=done'); default: your last-used "
+            "filter in this repo"
         ),
     )
     parser.add_argument(
@@ -132,9 +134,11 @@ def _protect(branch: BranchInfo, current: str | None, default: str, config: Conf
 
 
 def run(args: argparse.Namespace) -> int:
-    try:
-        sort_fields = planner.parse_sort(args.sort)
-        filter_terms = planner.parse_filter(args.filter)
+    try:  # validate explicit flags before any git call
+        if args.sort is not None:
+            planner.parse_sort(args.sort)
+        if args.filter is not None:
+            planner.parse_filter(args.filter)
     except ValueError as exc:
         ui.warn(str(exc))
         return 2
@@ -146,7 +150,24 @@ def run(args: argparse.Namespace) -> int:
         ui.warn("this repository has no 'origin' remote")
         return 1
 
-    config = load_config(args.config)
+    root = gitops.repo_root().resolve()
+    config = load_config(args.config, repo_root=root)
+
+    # explicit flag > saved view (interactive runs only) > default
+    interactive = _interactive()
+    persisted = state.load_repo_state(root) if interactive else {}
+    filter_spec = args.filter if args.filter is not None else persisted.get("filter", "")
+    sort_spec = args.sort if args.sort is not None else persisted.get("sort", planner.DEFAULT_SORT)
+    try:
+        filter_terms = planner.parse_filter(filter_spec)
+    except ValueError as exc:  # explicit flags were pre-validated: saved spec is at fault
+        ui.warn(f"ignoring saved filter {filter_spec!r}: {exc}")
+        filter_spec, filter_terms = "", []
+    try:
+        sort_fields = planner.parse_sort(sort_spec)
+    except ValueError as exc:
+        ui.warn(f"ignoring saved sort {sort_spec!r}: {exc}")
+        sort_fields = planner.parse_sort(planner.DEFAULT_SORT)
 
     if args.no_fetch:
         ui.info("[dim]skipping fetch (--no-fetch)[/dim]")
@@ -157,26 +178,30 @@ def run(args: argparse.Namespace) -> int:
         summary += f" · {scan.issues_found} issues looked up"
     ui.info(summary)
 
-    branches = scan.branches
-    if filter_terms:
-        total = len(branches)
-        branches = planner.filter_branches(branches, filter_terms, scan.user_email)
-        ui.info(f"[dim]filter matched {len(branches)} of {total} branches[/dim]")
-    branches = planner.sort_branches(branches, sort_fields)
-
-    if not _interactive():
-        ui.render_branch_table(branches)
+    if not interactive:
+        branches = scan.branches
+        if filter_terms:
+            total = len(branches)
+            branches = planner.filter_branches(branches, filter_terms, scan.user_email)
+            ui.info(f"[dim]filter matched {len(branches)} of {total} branches[/dim]")
+        ui.render_branch_table(planner.sort_branches(branches, sort_fields))
         ui.warn("stdin is not a terminal; skipping interactive cleanup")
         return 0
 
+    def persist_view(filter_spec: str, sort_spec: str) -> None:
+        state.save_repo_state(root, {"filter": filter_spec, "sort": sort_spec})
+
+    # the TUI gets every branch; it applies filter/sort itself, so filters
+    # can be loosened in-session to reveal hidden branches
     decisions = tui.run_tui(
-        branches,
+        scan.branches,
         my_email=scan.user_email,
         include_all=args.all,
         archive_age_days=config.archive_age_days,
         sort_fields=sort_fields,
-        filter_spec=args.filter,
+        filter_spec=filter_spec,
         dry_run=args.dry_run,
+        on_view_change=persist_view,
     )
     if decisions is None:
         ui.info("Aborted; no changes made.")

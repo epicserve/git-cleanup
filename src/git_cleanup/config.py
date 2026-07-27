@@ -29,11 +29,23 @@ def default_config_path(env: Mapping[str, str] | None = None) -> Path:
     return Path(base) / "git-cleanup" / "config.toml"
 
 
+def _repo_overrides(data: dict, repo_root: Path | None) -> dict:
+    """Sections from a [repos."<path>"] table matching repo_root, or {}."""
+    if repo_root is None:
+        return {}
+    resolved = repo_root.expanduser().resolve()
+    for key, sections in data.get("repos", {}).items():
+        if Path(key).expanduser().resolve() == resolved:
+            return sections
+    return {}
+
+
 def load_config(
     path: Path | None = None,
     env: Mapping[str, str] | None = None,
+    repo_root: Path | None = None,
 ) -> Config:
-    """Load config with precedence: env var > config file > default."""
+    """Load config with precedence: env var > repo override > config file > default."""
     env = os.environ if env is None else env
     if path is None:
         path = default_config_path(env)
@@ -43,9 +55,14 @@ def load_config(
         with path.open("rb") as f:
             data = tomllib.load(f)
 
-    tracker = data.get("tracker", {})
-    jira = data.get("jira", {})
-    cleanup = data.get("cleanup", {})
+    overrides = _repo_overrides(data, repo_root)
+
+    def section(name: str) -> dict:
+        return {**data.get(name, {}), **overrides.get(name, {})}
+
+    tracker = section("tracker")
+    jira = section("jira")
+    cleanup = section("cleanup")
 
     return Config(
         provider=(tracker.get("provider") or "jira").strip().lower(),

@@ -6,7 +6,7 @@ decisions to the caller, which executes them after the TUI exits.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -32,6 +32,13 @@ class SpecInput(Input):
         assert isinstance(app, CleanupApp)
         app.close_spec_input()
 
+
+class BranchTable(DataTable):
+    """Re-declares Enter as a visible binding so the Footer advertises Review."""
+
+    BINDINGS = [Binding("enter", "select_cursor", "Review")]
+
+
 _ACTION_STYLES = {
     Action.KEEP: "dim",
     Action.DELETE: "bold red",
@@ -49,6 +56,7 @@ def run_tui(
     sort_fields: list[tuple[str, bool]],
     filter_spec: str = "",
     dry_run: bool = False,
+    on_view_change: Callable[[str, str], None] | None = None,
 ) -> list[Decision] | None:
     """Run the cleanup TUI. Returns confirmed decisions, or None if quit."""
     app = CleanupApp(
@@ -59,6 +67,7 @@ def run_tui(
         sort_fields=sort_fields,
         filter_spec=filter_spec,
         dry_run=dry_run,
+        on_view_change=on_view_change,
     )
     return app.run()
 
@@ -153,11 +162,13 @@ class CleanupApp(App[list[Decision] | None]):
         Binding("k", "mark('keep')", "Keep"),
         Binding("slash", "open_filter", "Filter"),
         Binding("s", "open_sort", "Sort"),
+        Binding("r", "reset_view", "Reset view"),
         Binding("q,escape", "quit_nochange", "Quit"),
     ]
 
     DEFAULT_CSS = """
     #status { height: 1; padding: 0 1; background: $primary-darken-2; }
+    #status.dry-run { background: $warning-darken-2; color: auto; }
     #spec-input { display: none; dock: bottom; }
     DataTable { height: 1fr; }
     """
@@ -172,6 +183,7 @@ class CleanupApp(App[list[Decision] | None]):
         sort_fields: list[tuple[str, bool]],
         filter_spec: str = "",
         dry_run: bool = False,
+        on_view_change: Callable[[str, str], None] | None = None,
     ) -> None:
         super().__init__()
         self._all = list(branches)
@@ -180,6 +192,7 @@ class CleanupApp(App[list[Decision] | None]):
         self._sort_fields = sort_fields
         self._filter_spec = filter_spec
         self._dry_run = dry_run
+        self._on_view_change = on_view_change
         self._by_name = {b.name: b for b in self._all}
         self._input_mode = ""  # "filter" | "sort" while the spec input is open
 
@@ -211,12 +224,13 @@ class CleanupApp(App[list[Decision] | None]):
 
     def compose(self) -> ComposeResult:
         yield Static(id="status")
-        table = DataTable(cursor_type="row", zebra_stripes=True)
+        table = BranchTable(cursor_type="row", zebra_stripes=True)
         yield table
         yield SpecInput(id="spec-input")
         yield Footer()
 
     def on_mount(self) -> None:
+        self.query_one("#status", Static).set_class(self._dry_run, "dry-run")
         table = self.query_one(DataTable)
         for key, label in (
             ("action", "Action"),
@@ -269,7 +283,10 @@ class CleanupApp(App[list[Decision] | None]):
     def _refresh_status(self) -> None:
         deletes = sum(1 for a in self.actions.values() if a is Action.DELETE)
         archives = sum(1 for a in self.actions.values() if a is Action.ARCHIVE)
-        parts = [
+        parts = []
+        if self._dry_run:
+            parts.append("DRY RUN — nothing will change")
+        parts += [
             f"{len(self._visible)} of {len(self._all)} branches"
             if len(self._visible) != len(self._all)
             else f"{len(self._all)} branches",
@@ -286,8 +303,6 @@ class CleanupApp(App[list[Decision] | None]):
             parts.append(f"{hidden_marked} marked hidden by filter")
         if self._filter_spec:
             parts.append(f"filter: {self._filter_spec}")
-        if self._dry_run:
-            parts.append("DRY RUN")
         self.query_one("#status", Static).update(Text(" · ".join(parts), style="bold"))
 
     # ---------- actions ----------
@@ -347,6 +362,18 @@ class CleanupApp(App[list[Decision] | None]):
 
     # ---------- filter / sort inputs ----------
 
+    def _notify_view_change(self) -> None:
+        if self._on_view_change is not None:
+            self._on_view_change(self._filter_spec, planner.format_sort(self._sort_fields))
+
+    def action_reset_view(self) -> None:
+        self._filter_spec = ""
+        self._sort_fields = planner.parse_sort(planner.DEFAULT_SORT)
+        self._visible = self._apply_view(self._all)
+        self._rebuild_table()
+        self._notify_view_change()
+        self.notify("Filter and sort reset", timeout=3)
+
     def _open_input(self, mode: str, value: str, placeholder: str) -> None:
         self._input_mode = mode
         spec_input = self.query_one("#spec-input", SpecInput)
@@ -361,8 +388,7 @@ class CleanupApp(App[list[Decision] | None]):
         )
 
     def action_open_sort(self) -> None:
-        spec = ",".join(("-" if desc else "") + name for name, desc in self._sort_fields)
-        self._open_input("sort", spec, "sort: e.g. -age,author")
+        self._open_input("sort", planner.format_sort(self._sort_fields), "sort: e.g. -age,author")
 
     def close_spec_input(self) -> None:
         spec_input = self.query_one("#spec-input", SpecInput)
@@ -377,10 +403,11 @@ class CleanupApp(App[list[Decision] | None]):
                 planner.parse_filter(value)  # validate before adopting
                 self._filter_spec = value
             elif mode == "sort":
-                self._sort_fields = planner.parse_sort(value or "branch")
+                self._sort_fields = planner.parse_sort(value or planner.DEFAULT_SORT)
         except ValueError as exc:
             self.notify(str(exc), severity="error", timeout=5)
             return
         self._visible = self._apply_view(self._all)
         self.close_spec_input()
         self._rebuild_table()
+        self._notify_view_change()

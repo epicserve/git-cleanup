@@ -89,6 +89,7 @@ _SORT_KEYS = {
     "status": lambda b: b.issue.status.lower() if b.issue else "",
 }
 SORT_COLUMNS = tuple(_SORT_KEYS)
+DEFAULT_SORT = "branch"
 
 
 def parse_sort(spec: str) -> list[tuple[str, bool]]:
@@ -108,6 +109,11 @@ def parse_sort(spec: str) -> list[tuple[str, bool]]:
             )
         fields.append((name, descending))
     return fields
+
+
+def format_sort(fields: Sequence[tuple[str, bool]]) -> str:
+    """Inverse of parse_sort: [('age', True), ('author', False)] -> '-age,author'."""
+    return ",".join(("-" if descending else "") + name for name, descending in fields)
 
 
 def sort_branches(

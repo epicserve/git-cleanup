@@ -2,9 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from git_cleanup import cli, planner, tui
+from git_cleanup import cli, planner, state, tui
 from git_cleanup.models import Action
 from tests.conftest import git
+
+
+@pytest.fixture(autouse=True)
+def isolated_state(tmp_path: Path, monkeypatch):
+    """Keep persisted view state away from the developer's real ~/.local/state."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
 
 @pytest.fixture
@@ -123,13 +129,82 @@ def test_invalid_filter_fails_fast(repo, no_tracker_config, monkeypatch):
     assert run_cli("--filter", "age>abc", "--config", str(no_tracker_config)) == 2
 
 
-def test_filter_restricts_tui_branches(repo, no_tracker_config, accept_recommended, monkeypatch):
+def test_filter_passed_to_tui_with_all_branches(
+    repo, no_tracker_config, accept_recommended, monkeypatch
+):
     monkeypatch.chdir(repo)
     code = run_cli("--filter", "author=nobody", "--config", str(no_tracker_config))
     assert code == 0
-    # nothing matched the filter, so the TUI received no branches to act on
-    assert accept_recommended["branches"] == [[]]
-    assert git("branch", "--list", "abc-123-fix-login", cwd=repo) != ""
+    # the TUI gets every branch (so the filter can be loosened in-session)
+    # plus the spec to apply as its initial view
+    assert len(accept_recommended["branches"][0]) == 6
+    assert accept_recommended["kwargs"][0]["filter_spec"] == "author=nobody"
+
+
+def test_persisted_view_used_when_no_flags(
+    repo, no_tracker_config, accept_recommended, monkeypatch
+):
+    monkeypatch.chdir(repo)
+    root = Path(git("rev-parse", "--show-toplevel", cwd=repo)).resolve()
+    state.save_repo_state(root, {"filter": "mine", "sort": "-age"})
+    code = run_cli("--dry-run", "--config", str(no_tracker_config))
+    assert code == 0
+    kwargs = accept_recommended["kwargs"][0]
+    assert kwargs["filter_spec"] == "mine"
+    assert kwargs["sort_fields"] == planner.parse_sort("-age")
+
+
+def test_explicit_flags_beat_persisted_view(
+    repo, no_tracker_config, accept_recommended, monkeypatch
+):
+    monkeypatch.chdir(repo)
+    root = Path(git("rev-parse", "--show-toplevel", cwd=repo)).resolve()
+    state.save_repo_state(root, {"filter": "mine", "sort": "-age"})
+    code = run_cli("--dry-run", "--filter", "author=nobody", "--config", str(no_tracker_config))
+    assert code == 0
+    kwargs = accept_recommended["kwargs"][0]
+    assert kwargs["filter_spec"] == "author=nobody"
+    assert kwargs["sort_fields"] == planner.parse_sort("-age")  # sort still persisted
+
+
+def test_invalid_persisted_view_warns_and_defaults(
+    repo, no_tracker_config, accept_recommended, monkeypatch, capsys
+):
+    monkeypatch.chdir(repo)
+    root = Path(git("rev-parse", "--show-toplevel", cwd=repo)).resolve()
+    state.save_repo_state(root, {"filter": "age>abc", "sort": "bogus"})
+    code = run_cli("--dry-run", "--config", str(no_tracker_config))
+    assert code == 0
+    kwargs = accept_recommended["kwargs"][0]
+    assert kwargs["filter_spec"] == ""
+    assert kwargs["sort_fields"] == planner.parse_sort("branch")
+    out = capsys.readouterr().out
+    assert "ignoring saved filter" in out and "ignoring saved sort" in out
+
+
+def test_view_changes_persist_to_state_file(repo, no_tracker_config, monkeypatch):
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+
+    def fake_run_tui(branches, **kwargs):
+        kwargs["on_view_change"]("mine", "-age")
+        return []
+
+    monkeypatch.setattr(tui, "run_tui", fake_run_tui)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    root = Path(git("rev-parse", "--show-toplevel", cwd=repo)).resolve()
+    assert state.load_repo_state(root) == {"filter": "mine", "sort": "-age"}
+
+
+def test_non_interactive_ignores_persisted_view(repo, no_tracker_config, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    root = Path(git("rev-parse", "--show-toplevel", cwd=repo)).resolve()
+    state.save_repo_state(root, {"filter": "author=nobody"})
+    # no _interactive patch: pytest's stdin is not a TTY
+    code = run_cli("--config", str(no_tracker_config))
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "abc-123" in out  # saved filter not applied to CI/pipe output
 
 
 def test_outside_repo_fails_cleanly(tmp_path, monkeypatch):

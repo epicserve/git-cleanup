@@ -24,8 +24,12 @@ on origin), confirm, and it executes. Quit with `q` and nothing changes.
 | `d` / `a` / `k` | Mark delete / archive / keep |
 | `/` | Live filter (same syntax as `--filter`) |
 | `s` | Live sort (same syntax as `--sort`) |
+| `r` | Reset filter & sort to defaults |
 | `Enter` | Review and confirm |
 | `q` / `Esc` | Quit without changes |
+
+Filter and sort changes are remembered per repository, so your view comes back the next
+time you run `git-cleanup` there. `r` resets (and forgets) them.
 
 Jira is the built-in issue tracker for now; the provider layer is designed so GitHub
 Issues, Linear, etc. can be added later. The scan pipeline (`git_cleanup.core.scan_repo`
@@ -48,6 +52,10 @@ $ uvx git-cleanup --dry-run  # preview everything, change nothing
 | `--all` | Pre-mark other authors' cleanup-eligible branches for deletion too |
 | `--sort COLS` | Sort columns, comma-separated, `-` prefix for descending — e.g. `--sort=-age,status,author`. Columns: `branch`, `local`, `remote`, `sync`, `author`, `age`, `merged`, `issue`, `status` |
 | `--filter TERMS` | Only show branches matching all terms — e.g. `--filter 'mine,age>6m,status!=done'`. A bare word matches any text column (`--filter brent`). Flags: `mine`, `merged`, `local`, `remote`, `gone` (prefix `!` to negate); `age>N`/`age<N`/`age>=N`/`age<=N` in days or with `d`/`m`/`y` suffix; substring matches `branch=X`, `author=X`, `issue=X`, `status=X` (`!=` excludes). Quote specs containing `>` or `!` |
+
+Interactive runs default to your last-used filter and sort in that repository; an
+explicit `--sort`/`--filter` wins for that session without overwriting the saved view.
+Non-interactive runs (pipes, CI) use only explicit flags.
 | `--config PATH` | Use an alternate config file |
 | `--version` | Print the version |
 
@@ -85,8 +93,24 @@ done_statuses = []         # extra status names to treat as done, e.g. ["Won't D
 archive_age_days = 90      # minimum age for the archive prompt
 ```
 
+Any setting can be overridden per repository with a `[repos."<path>"]` table in the
+same file — the key is the repository's root path (`~` expands), and its values merge
+key-by-key over the global sections:
+
+```toml
+[repos."~/Code/some-repo".cleanup]
+protected_branches = ["main", "staging"]
+archive_age_days = 30
+
+[repos."~/Code/other-repo".tracker]
+provider = "none"
+```
+
 Environment variables `JIRA_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` override the
-config file.
+config file, including repo overrides.
+
+Filter/sort views chosen in the TUI are saved per repository in
+`$XDG_STATE_HOME/git-cleanup/state.json` (default `~/.local/state/git-cleanup/state.json`).
 
 ## Development
 

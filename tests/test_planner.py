@@ -146,6 +146,11 @@ def test_parse_sort_rejects_unknown_column():
         planner.parse_sort("age,bogus")
 
 
+def test_format_sort_roundtrip():
+    assert planner.format_sort(planner.parse_sort("-age,author")) == "-age,author"
+    assert planner.format_sort(planner.parse_sort(planner.DEFAULT_SORT)) == "branch"
+
+
 def test_sort_branches_multi_column():
     def branch(name, days_old, status=None):
         b = build([ref(name, days_old=days_old)], set())[0]

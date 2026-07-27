@@ -57,6 +57,11 @@ def in_git_repo(cwd: Path | None = None) -> bool:
         return False
 
 
+def repo_root(cwd: Path | None = None) -> Path:
+    """Absolute path of the working-tree top level."""
+    return Path(run_git("rev-parse", "--show-toplevel", cwd=cwd))
+
+
 def has_origin(cwd: Path | None = None) -> bool:
     try:
         remotes = run_git("remote", cwd=cwd).splitlines()
