@@ -22,6 +22,7 @@ on origin), confirm, and it executes. Quit with `q` and nothing changes.
 | ↑/↓, PgUp/PgDn | Move |
 | `space` | Cycle keep → delete → archive |
 | `d` / `a` / `k` | Mark delete / archive / keep |
+| `o` | Open the branch's compare page on origin (vs the default branch) |
 | `/` | Live filter (same syntax as `--filter`) |
 | `s` | Live sort (same syntax as `--sort`) |
 | `r` | Reset filter & sort to defaults |

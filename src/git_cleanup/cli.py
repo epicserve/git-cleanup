@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from functools import partial
 from pathlib import Path
 
 from git_cleanup import __version__, gitops, planner, state, tui, ui
@@ -191,6 +192,11 @@ def run(args: argparse.Namespace) -> int:
     def persist_view(filter_spec: str, sort_spec: str) -> None:
         state.save_repo_state(root, {"filter": filter_spec, "sort": sort_spec})
 
+    web_url = gitops.origin_web_url()
+    compare_url = (
+        partial(gitops.compare_url, web_url, scan.default_branch) if web_url else None
+    )
+
     # the TUI gets every branch; it applies filter/sort itself, so filters
     # can be loosened in-session to reveal hidden branches
     decisions = tui.run_tui(
@@ -202,6 +208,7 @@ def run(args: argparse.Namespace) -> int:
         filter_spec=filter_spec,
         dry_run=args.dry_run,
         on_view_change=persist_view,
+        compare_url=compare_url,
     )
     if decisions is None:
         ui.info("Aborted; no changes made.")

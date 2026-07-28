@@ -57,8 +57,13 @@ def run_tui(
     filter_spec: str = "",
     dry_run: bool = False,
     on_view_change: Callable[[str, str], None] | None = None,
+    compare_url: Callable[[str], str] | None = None,
 ) -> list[Decision] | None:
-    """Run the cleanup TUI. Returns confirmed decisions, or None if quit."""
+    """Run the cleanup TUI. Returns confirmed decisions, or None if quit.
+
+    compare_url maps a branch name to the origin compare page for it;
+    None when origin has no web URL (the 'o' key then explains itself).
+    """
     app = CleanupApp(
         branches,
         my_email=my_email,
@@ -68,6 +73,7 @@ def run_tui(
         filter_spec=filter_spec,
         dry_run=dry_run,
         on_view_change=on_view_change,
+        compare_url=compare_url,
     )
     return app.run()
 
@@ -160,6 +166,7 @@ class CleanupApp(App[list[Decision] | None]):
         Binding("d", "mark('delete')", "Delete"),
         Binding("a", "mark('archive')", "Archive"),
         Binding("k", "mark('keep')", "Keep"),
+        Binding("o", "open_compare", "Compare"),
         Binding("slash", "open_filter", "Filter"),
         Binding("s", "open_sort", "Sort"),
         Binding("r", "reset_view", "Reset view"),
@@ -184,6 +191,7 @@ class CleanupApp(App[list[Decision] | None]):
         filter_spec: str = "",
         dry_run: bool = False,
         on_view_change: Callable[[str, str], None] | None = None,
+        compare_url: Callable[[str], str] | None = None,
     ) -> None:
         super().__init__()
         self._all = list(branches)
@@ -193,6 +201,7 @@ class CleanupApp(App[list[Decision] | None]):
         self._filter_spec = filter_spec
         self._dry_run = dry_run
         self._on_view_change = on_view_change
+        self._compare_url = compare_url
         self._by_name = {b.name: b for b in self._all}
         self._input_mode = ""  # "filter" | "sort" while the spec input is open
 
@@ -334,6 +343,21 @@ class CleanupApp(App[list[Decision] | None]):
         branch = self._cursor_branch()
         if branch:
             self._set_action(branch, Action(action))
+
+    def action_open_compare(self) -> None:
+        branch = self._cursor_branch()
+        if branch is None:
+            return
+        if self._compare_url is None:
+            self.notify("origin has no web URL to link to", severity="warning", timeout=3)
+            return
+        if branch.is_default:
+            self.notify(f"{branch.name} is the compare base", severity="warning", timeout=3)
+            return
+        if not branch.has_remote:
+            self.notify(f"{branch.name} is not on origin", severity="warning", timeout=3)
+            return
+        self.open_url(self._compare_url(branch.name))
 
     def _decisions(self) -> list[Decision]:
         return [

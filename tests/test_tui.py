@@ -260,6 +260,37 @@ async def test_reset_fires_callback():
         assert changes == [("", "branch")]
 
 
+async def test_o_opens_compare_for_remote_branch():
+    opened: list[str] = []
+    app = make_app(compare_url=lambda name: f"https://example.com/compare/main...{name}")
+    app.open_url = opened.append
+    async with app.run_test() as pilot:
+        await pilot.press("o")  # cursor on abc-1-merged, which is on origin
+        assert opened == ["https://example.com/compare/main...abc-1-merged"]
+
+
+async def test_o_skips_default_and_local_only_branches():
+    opened: list[str] = []
+    app = make_app(compare_url=lambda name: name)
+    app.open_url = opened.append
+    async with app.run_test() as pilot:
+        await pilot.press("down", "down")  # main: the compare base itself
+        await pilot.press("o")
+        await pilot.press("down")  # old-thing: not on origin
+        await pilot.press("o")
+        assert opened == []
+
+
+async def test_o_without_web_url_is_noop():
+    opened: list[str] = []
+    app = make_app()  # compare_url omitted: origin has no web URL
+    app.open_url = opened.append
+    async with app.run_test() as pilot:
+        await pilot.press("o")
+        assert opened == []
+        assert app.is_running
+
+
 def status_text(app: CleanupApp) -> str:
     content = app.query_one("#status", Static).content
     assert isinstance(content, Text)

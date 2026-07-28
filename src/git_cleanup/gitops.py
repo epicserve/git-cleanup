@@ -10,6 +10,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 
 class GitError(RuntimeError):
@@ -72,6 +73,33 @@ def has_origin(cwd: Path | None = None) -> bool:
 
 def fetch_prune(cwd: Path | None = None) -> None:
     run_git("fetch", "--prune", "origin", cwd=cwd)
+
+
+_SSH_URL_RE = re.compile(r"^(?:ssh://)?git@(?P<host>[^:/]+)[:/](?P<path>.+)$")
+
+
+def origin_web_url(cwd: Path | None = None) -> str | None:
+    """https:// project page derived from origin's URL.
+
+    Handles https and ssh remote forms; returns None for anything else
+    (e.g. a filesystem path), meaning no browser links are available.
+    """
+    try:
+        raw = run_git("remote", "get-url", "origin", cwd=cwd)
+    except GitError:
+        return None
+    raw = raw.removesuffix(".git").rstrip("/")
+    if raw.startswith(("https://", "http://")):
+        return raw
+    match = _SSH_URL_RE.match(raw)
+    if match:
+        return f"https://{match['host']}/{match['path']}"
+    return None
+
+
+def compare_url(web_url: str, base: str, branch: str) -> str:
+    """GitHub-style three-dot compare: what `branch` adds since diverging from `base`."""
+    return f"{web_url}/compare/{quote(base, safe='/')}...{quote(branch, safe='/')}"
 
 
 def get_default_branch(cwd: Path | None = None) -> str:

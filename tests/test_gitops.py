@@ -21,6 +21,30 @@ def test_get_default_branch(repo: Path):
     assert gitops.get_default_branch(cwd=repo) == "main"
 
 
+def test_origin_web_url_path_remote_is_none(repo: Path):
+    # the fixture's origin is a local filesystem path
+    assert gitops.origin_web_url(cwd=repo) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "git@github.com:acme/widgets.git",
+        "ssh://git@github.com/acme/widgets.git",
+        "https://github.com/acme/widgets.git",
+        "https://github.com/acme/widgets",
+    ],
+)
+def test_origin_web_url_normalizes_remote_forms(repo: Path, raw: str):
+    git("remote", "set-url", "origin", raw, cwd=repo)
+    assert gitops.origin_web_url(cwd=repo) == "https://github.com/acme/widgets"
+
+
+def test_compare_url_quotes_branch_but_keeps_slashes():
+    url = gitops.compare_url("https://github.com/acme/widgets", "main", "feat/log#2")
+    assert url == "https://github.com/acme/widgets/compare/main...feat/log%232"
+
+
 def test_get_current_branch(repo: Path):
     assert gitops.get_current_branch(cwd=repo) == "main"
 
