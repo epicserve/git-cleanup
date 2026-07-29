@@ -70,6 +70,22 @@ def test_full_run_deletes_and_archives(repo, no_tracker_config, accept_recommend
     assert git("ls-remote", "--heads", "origin", "abc-99-hotfix", cwd=repo) != ""
 
 
+def test_delete_local_leaves_origin_alone(repo, no_tracker_config, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+
+    def fake_run_tui(branches, **kwargs):
+        by_name = {b.name: b for b in branches}
+        return [(by_name["abc-123-fix-login"], Action.DELETE_LOCAL)]
+
+    monkeypatch.setattr(tui, "run_tui", fake_run_tui)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+
+    assert git("branch", "--list", "abc-123-fix-login", cwd=repo) == ""
+    assert git("ls-remote", "--heads", "origin", "abc-123-fix-login", cwd=repo) != ""
+    assert "deleted 1 local, 0 remote" in capsys.readouterr().out
+
+
 def test_dry_run_changes_nothing(repo, no_tracker_config, accept_recommended, monkeypatch):
     monkeypatch.chdir(repo)
     code = run_cli("--dry-run", "--config", str(no_tracker_config))

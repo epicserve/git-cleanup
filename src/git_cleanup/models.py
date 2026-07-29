@@ -16,6 +16,7 @@ class IssueState(StrEnum):
 class Action(StrEnum):
     KEEP = "keep"
     DELETE = "delete"
+    DELETE_LOCAL = "delete-local"
     ARCHIVE = "archive"
 
 
@@ -61,6 +62,11 @@ class BranchInfo:
     @property
     def has_unpushed(self) -> bool:
         return bool(self.ahead)
+
+    @property
+    def has_both_refs(self) -> bool:
+        """True when delete-local means something different from delete."""
+        return self.has_local and self.has_remote
 
     @property
     def cleanup_eligible(self) -> bool:

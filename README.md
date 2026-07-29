@@ -8,6 +8,10 @@ a full-screen TUI: one table of all branches where each row carries an action yo
 
 - **delete** — removes the branch locally and on origin (whatever exists). Your branches
   that are merged or whose issue is done come pre-marked.
+- **delete-local** — removes only your local branch and leaves `origin/<branch>` in place.
+  For treating local branches as your active workspace: clear one off your machine because
+  the remote still has it. Nobody else is affected. Press `d` a second time to get here.
+  Branches that exist on only one side skip this action — `delete` is already single-sided.
 - **archive** — creates a tag `archive/<branch>` at the tip (pushed for remote branches),
   then deletes the branch. Restore any time with `git checkout -b <branch> archive/<branch>`.
 - **keep** — the default; nothing happens.
@@ -20,8 +24,9 @@ on origin), confirm, and it executes. Quit with `q` and nothing changes.
 | Key | Action |
 |---|---|
 | ↑/↓, PgUp/PgDn | Move |
-| `space` | Cycle keep → delete → archive |
-| `d` / `a` / `k` | Mark delete / archive / keep |
+| `space` | Cycle keep → delete → delete-local → archive |
+| `d` | Mark delete; press again to toggle between delete and delete-local |
+| `a` / `k` | Mark archive / keep |
 | `o` | Open the branch's compare page on origin (vs the default branch) |
 | `/` | Live filter (same syntax as `--filter`) |
 | `s` | Live sort (same syntax as `--sort`) |
@@ -31,6 +36,11 @@ on origin), confirm, and it executes. Quit with `q` and nothing changes.
 
 Filter and sort changes are remembered per repository, so your view comes back the next
 time you run `git-cleanup` there. `r` resets (and forgets) them.
+
+A `delete-local` branch still exists on origin, so the next scan lists it again as a
+remote-only row. If you treat local branches as your active workspace, filter to `local`
+(press `/`, type `local`) to see only branches you actually have checked out — that filter
+is remembered per repo, so the branches you have cleared off your machine stay out of view.
 
 Jira is the built-in issue tracker for now; the provider layer is designed so GitHub
 Issues, Linear, etc. can be added later. The scan pipeline (`git_cleanup.core.scan_repo`
@@ -71,6 +81,8 @@ branch name, case-insensitively. Branches without a key just show no issue info.
   TUI changes nothing.
 - Remote deletions are called out in their own red-bordered warning on the review
   screen, and local deletions that would lose unpushed commits are flagged.
+- `delete-local` rows never appear in that warning (nothing leaves origin); they are
+  listed with the `origin/<branch>` they are keeping.
 - Non-interactive runs (pipes, CI) never mutate anything — they print the table and exit.
 - If Jira is unreachable or unconfigured, the tool degrades to git-only info
   (merged status still works).

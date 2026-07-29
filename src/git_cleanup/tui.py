@@ -42,9 +42,23 @@ class BranchTable(DataTable):
 _ACTION_STYLES = {
     Action.KEEP: "dim",
     Action.DELETE: "bold red",
+    Action.DELETE_LOCAL: "red",  # single-sided: less alarming than deleting for everyone
     Action.ARCHIVE: "yellow",
 }
-_CYCLE = {Action.KEEP: Action.DELETE, Action.DELETE: Action.ARCHIVE, Action.ARCHIVE: Action.KEEP}
+_CYCLE = {
+    Action.KEEP: Action.DELETE,
+    Action.DELETE: Action.DELETE_LOCAL,
+    Action.DELETE_LOCAL: Action.ARCHIVE,
+    Action.ARCHIVE: Action.KEEP,
+}
+
+
+def _next_action(branch: BranchInfo, current: Action) -> Action:
+    """Next action in the cycle, skipping delete-local when it adds nothing."""
+    following = _CYCLE[current]
+    if following is Action.DELETE_LOCAL and not branch.has_both_refs:
+        return _CYCLE[following]
+    return following
 
 
 def run_tui(
@@ -104,10 +118,16 @@ class ReviewScreen(ModalScreen[bool]):
         self._dry_run = dry_run
 
     def compose(self) -> ComposeResult:
-        deletes = [b for b, a in self._decisions if a is Action.DELETE]
         archives = [b for b, a in self._decisions if a is Action.ARCHIVE]
-        local = [b for b in deletes if b.has_local]
-        remote = [b for b in deletes if b.has_remote]
+        local = [
+            b
+            for b, a in self._decisions
+            if b.has_local and a in (Action.DELETE, Action.DELETE_LOCAL)
+        ]
+        remote = [b for b, a in self._decisions if b.has_remote and a is Action.DELETE]
+        kept_on_origin = {
+            b.name for b, a in self._decisions if a is Action.DELETE_LOCAL and b.has_remote
+        }
 
         lines: list[Text] = []
         title = "Review actions" + (" (DRY RUN — nothing will change)" if self._dry_run else "")
@@ -118,6 +138,8 @@ class ReviewScreen(ModalScreen[bool]):
                     lines.append(Text(f"Delete {len(local)} local:", style="bold"))
                     for b in local:
                         line = Text(f"  {b.name}")
+                        if b.name in kept_on_origin:
+                            line.append(f"  → keeping origin/{b.name}", style="green")
                         if b.has_unpushed:
                             line.append(f"  ↑{b.ahead} unpushed — will be lost", style="bold red")
                         lines.append(line)
@@ -163,7 +185,7 @@ class CleanupApp(App[list[Decision] | None]):
 
     BINDINGS = [
         Binding("space", "cycle", "Cycle action"),
-        Binding("d", "mark('delete')", "Delete"),
+        Binding("d", "mark_delete", "Delete (again: local)"),
         Binding("a", "mark('archive')", "Archive"),
         Binding("k", "mark('keep')", "Keep"),
         Binding("o", "open_compare", "Compare"),
@@ -241,8 +263,11 @@ class CleanupApp(App[list[Decision] | None]):
     def on_mount(self) -> None:
         self.query_one("#status", Static).set_class(self._dry_run, "dry-run")
         table = self.query_one(DataTable)
+        # the action column is sized for the longest label up front: cell updates
+        # pass update_width=False, so a narrow column would truncate "delete-local"
+        # down to a misleading "delete"
+        table.add_column("Action", key="action", width=len(Action.DELETE_LOCAL))
         for key, label in (
-            ("action", "Action"),
             ("branch", "Branch"),
             ("local", "Local"),
             ("remote", "Remote"),
@@ -291,6 +316,7 @@ class CleanupApp(App[list[Decision] | None]):
 
     def _refresh_status(self) -> None:
         deletes = sum(1 for a in self.actions.values() if a is Action.DELETE)
+        local_only = sum(1 for a in self.actions.values() if a is Action.DELETE_LOCAL)
         archives = sum(1 for a in self.actions.values() if a is Action.ARCHIVE)
         parts = []
         if self._dry_run:
@@ -300,8 +326,10 @@ class CleanupApp(App[list[Decision] | None]):
             if len(self._visible) != len(self._all)
             else f"{len(self._all)} branches",
             f"{deletes} delete",
-            f"{archives} archive",
         ]
+        if local_only:
+            parts.append(f"{local_only} delete-local")
+        parts.append(f"{archives} archive")
         visible_names = {b.name for b in self._visible}
         hidden_marked = sum(
             1
@@ -337,12 +365,30 @@ class CleanupApp(App[list[Decision] | None]):
         branch = self._cursor_branch()
         if branch:
             current = self.actions.get(branch.name, Action.KEEP)
-            self._set_action(branch, _CYCLE[current])
+            self._set_action(branch, _next_action(branch, current))
 
     def action_mark(self, action: str) -> None:
         branch = self._cursor_branch()
         if branch:
             self._set_action(branch, Action(action))
+
+    def action_mark_delete(self) -> None:
+        """First press deletes both sides; pressing again toggles to local-only."""
+        branch = self._cursor_branch()
+        if branch is None:
+            return
+        if self.actions.get(branch.name) is not Action.DELETE:
+            self._set_action(branch, Action.DELETE)
+            return
+        if not branch.has_both_refs:
+            hint = (
+                f"{branch.name} is not on origin — delete is already local-only"
+                if not branch.has_remote
+                else f"{branch.name} has no local branch — delete only affects origin"
+            )
+            self.notify(hint, timeout=3)
+            return
+        self._set_action(branch, Action.DELETE_LOCAL)
 
     def action_open_compare(self) -> None:
         branch = self._cursor_branch()

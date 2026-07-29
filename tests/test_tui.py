@@ -86,13 +86,25 @@ async def test_include_all_premarks_others():
 async def test_space_cycles_action():
     app = make_app()
     async with app.run_test() as pilot:
-        # cursor starts on row 0: abc-1-merged (DELETE)
+        # cursor starts on row 0: abc-1-merged (DELETE), local + remote
+        await pilot.press("space")
+        assert app.actions["abc-1-merged"] is Action.DELETE_LOCAL
         await pilot.press("space")
         assert app.actions["abc-1-merged"] is Action.ARCHIVE
         await pilot.press("space")
         assert app.actions["abc-1-merged"] is Action.KEEP
         await pilot.press("space")
         assert app.actions["abc-1-merged"] is Action.DELETE
+
+
+async def test_space_skips_delete_local_for_single_sided_branch():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.press("down", "down", "down")  # old-thing: local only
+        await pilot.press("space")
+        assert app.actions["old-thing"] is Action.DELETE
+        await pilot.press("space")
+        assert app.actions["old-thing"] is Action.ARCHIVE
 
 
 async def test_explicit_mark_keys():
@@ -105,6 +117,33 @@ async def test_explicit_mark_keys():
         assert app.actions["abc-2-open"] is Action.DELETE
         await pilot.press("k")
         assert app.actions["abc-2-open"] is Action.KEEP
+
+
+async def test_d_toggles_between_delete_and_delete_local():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.press("down")  # abc-2-open: local + remote
+        await pilot.press("d")
+        assert app.actions["abc-2-open"] is Action.DELETE  # first press: both sides
+        await pilot.press("d")
+        assert app.actions["abc-2-open"] is Action.DELETE_LOCAL
+        await pilot.press("d")
+        assert app.actions["abc-2-open"] is Action.DELETE  # toggles back
+        await pilot.press("k")
+        await pilot.press("d")
+        assert app.actions["abc-2-open"] is Action.DELETE  # re-entering starts at both
+
+
+async def test_d_stays_on_delete_for_single_sided_branches():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.press("down", "down", "down")  # old-thing: local only
+        await pilot.press("d", "d")
+        assert app.actions["old-thing"] is Action.DELETE
+
+        await pilot.press("down")  # zz-theirs: remote only
+        await pilot.press("d", "d")
+        assert app.actions["zz-theirs"] is Action.DELETE
 
 
 async def test_protected_row_rejected():
@@ -175,6 +214,43 @@ async def test_enter_review_confirm_returns_decisions():
         assert isinstance(app.screen, ReviewScreen)
         await pilot.press("y")
     assert [(b.name, a) for b, a in app.return_value] == [("abc-1-merged", Action.DELETE)]
+
+
+def review_text(app: CleanupApp) -> str:
+    return "\n".join(
+        widget.content.plain if isinstance(widget.content, Text) else str(widget.content)
+        for widget in app.screen.query(Static)
+    )
+
+
+async def test_review_warns_about_origin_for_plain_delete():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.press("enter")  # abc-1-merged is pre-marked DELETE
+        assert app.screen.query(".remote-warning")
+        assert "deleted for everyone" in review_text(app)
+
+
+async def test_review_omits_origin_warning_for_delete_local():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.press("d")  # pre-marked DELETE -> DELETE_LOCAL
+        assert app.actions["abc-1-merged"] is Action.DELETE_LOCAL
+        await pilot.press("enter")
+        assert isinstance(app.screen, ReviewScreen)
+        assert not app.screen.query(".remote-warning")
+        body = review_text(app)
+        assert "Delete 1 local:" in body
+        assert "keeping origin/abc-1-merged" in body
+
+
+async def test_review_confirm_returns_delete_local_decision():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        await pilot.press("enter")
+        await pilot.press("y")
+    assert [(b.name, a) for b, a in app.return_value] == [("abc-1-merged", Action.DELETE_LOCAL)]
 
 
 async def test_review_cancel_returns_to_table():
@@ -303,6 +379,16 @@ async def test_dry_run_status_prominent():
         status = app.query_one("#status", Static)
         assert status.has_class("dry-run")
         assert status_text(app).startswith("DRY RUN — nothing will change")
+
+
+async def test_status_counts_delete_local_separately():
+    app = make_app()
+    async with app.run_test() as pilot:
+        assert "1 delete" in status_text(app)
+        assert "delete-local" not in status_text(app)  # hidden while zero
+        await pilot.press("d")  # abc-1-merged: DELETE -> DELETE_LOCAL
+        status = status_text(app)
+        assert "0 delete" in status and "1 delete-local" in status
 
 
 async def test_no_dry_run_no_banner():
