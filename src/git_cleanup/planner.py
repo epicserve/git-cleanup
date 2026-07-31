@@ -152,6 +152,7 @@ def parse_filter(spec: str) -> list[FilterTerm]:
       mine / merged / local / remote / gone / worktree   (prefix ! to negate)
       age>N, age<N, age>=N, age<=N            (N in days, or with d/m/y suffix)
       branch=X, author=X, issue=X, status=X   (case-insensitive substring; != excludes)
+      status= / status!=                      (empty value: column is unset / is set)
       anything else                           (substring match across all text columns)
     """
     terms: list[FilterTerm] = []
@@ -173,14 +174,18 @@ def parse_filter(spec: str) -> list[FilterTerm]:
             col, _, needle = raw.partition("=")
             want = not col.endswith("!")
             col = col.rstrip("!").strip().lower()
-            if col not in _TEXT_COLUMNS or not needle.strip():
+            if col not in _TEXT_COLUMNS:
                 raise ValueError(
                     f"bad filter term {raw!r} (text columns: {', '.join(_TEXT_COLUMNS)})"
                 )
+            # An empty needle is meaningful, not a typo: it tests whether the column
+            # has any value at all. See _matches.
             terms.append(("text", col, needle.strip(), want))
             continue
         want = not raw.startswith("!")
         name = raw.removeprefix("!").lower()
+        if not name:
+            raise ValueError(f"bad filter term {raw!r} (expected a word after '!')")
         if name in _BOOL_COLUMNS:
             terms.append(("bool", name, want))
         else:
@@ -217,6 +222,10 @@ def _matches(b: BranchInfo, term: FilterTerm, my_email: str) -> bool:
                 "status": b.issue.status if b.issue else "",
             }
             haystack = " ".join(columns.values()) if col == "any" else columns[col]
+            if not needle:
+                # 'status=' keeps branches with no status, 'status!=' only those that
+                # have one. A substring test can't express this: "" is in everything.
+                return bool(haystack.strip()) != want
             return (needle.lower() in haystack.lower()) == want
     raise AssertionError(f"unreachable: {term}")
 

@@ -182,12 +182,16 @@ def test_parse_filter():
     assert planner.parse_filter("author=sam") == [("text", "author", "sam", True)]
     assert planner.parse_filter("status!=done") == [("text", "status", "done", False)]
     assert planner.parse_filter("") == []
+    # an empty value is a real term: "is the column set?"
+    assert planner.parse_filter("status=") == [("text", "status", "", True)]
+    assert planner.parse_filter("status!=") == [("text", "status", "", False)]
+    assert planner.parse_filter("issue= ") == [("text", "issue", "", True)]
     # bare words search all text columns
     assert planner.parse_filter("brent") == [("text", "any", "brent", True)]
     assert planner.parse_filter("!wip") == [("text", "any", "wip", False)]
 
 
-@pytest.mark.parametrize("bad", ["age>abc", "nope=x", "branch="])
+@pytest.mark.parametrize("bad", ["age>abc", "nope=x", "nope=", "!"])
 def test_parse_filter_rejects_bad_terms(bad: str):
     with pytest.raises(ValueError):
         planner.parse_filter(bad)
@@ -208,6 +212,9 @@ def test_filter_branches():
     assert names("branch=abc") == ["abc-1-merged", "abc-2-open", "abc-3-theirs"]
     assert names("status=done") == ["abc-2-open"]
     assert names("status!=done") == [b.name for b in branches if b.name != "abc-2-open"]
+    # abc-2-open is the only branch with an issue attached, so the only one with a status
+    assert names("status!=") == ["abc-2-open"]
+    assert names("status=") == [b.name for b in branches if b.name != "abc-2-open"]
     assert names("!remote") == ["old-thing"]
     # bare word matches any text column (author email here)
     assert names("sarah") == ["abc-3-theirs"]

@@ -110,7 +110,7 @@ $ uvx git-cleanup --dry-run  # preview everything, change nothing
 | `--no-fetch` | Skip the initial `git fetch --prune origin` |
 | `--all` | Pre-mark other authors' cleanup-eligible branches for deletion too |
 | `--sort COLS` | Sort columns, comma-separated, `-` prefix for descending — e.g. `--sort=-age,status,author`. Columns: `branch`, `local`, `remote`, `worktree`, `sync`, `author`, `age`, `merged`, `issue`, `status` |
-| `--filter TERMS` | Only show branches matching all terms — e.g. `--filter 'mine,age>6m,status!=done'`. A bare word matches any text column (`--filter brent`). Flags: `mine`, `merged`, `local`, `remote`, `gone`, `worktree` (prefix `!` to negate); `age>N`/`age<N`/`age>=N`/`age<=N` in days or with `d`/`m`/`y` suffix; substring matches `branch=X`, `author=X`, `issue=X`, `status=X` (`!=` excludes). Quote specs containing `>` or `!` |
+| `--filter TERMS` | Only show branches matching all terms — e.g. `--filter 'mine,age>6m,status!=done'`. A bare word matches any text column (`--filter brent`). Flags: `mine`, `merged`, `local`, `remote`, `gone`, `worktree` (prefix `!` to negate); `age>N`/`age<N`/`age>=N`/`age<=N` in days or with `d`/`m`/`y` suffix; substring matches `branch=X`, `author=X`, `issue=X`, `status=X` (`!=` excludes). An empty value tests whether the column is set at all — `status=` keeps only branches with no status, `status!=` only those that have one. Quote specs containing `>` or `!` |
 | `--config PATH` | Use an alternate config file |
 | `--version` | Print the version |
 

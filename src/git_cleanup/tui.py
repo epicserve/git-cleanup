@@ -1206,7 +1206,10 @@ class CleanupApp(App[Outcome | None]):
 
     def action_open_filter(self) -> None:
         self._open_input(
-            "filter", self._filter_spec, "filter: e.g. mine,age>6m,status!=done (empty clears)"
+            "filter",
+            self._filter_spec,
+            # kept under 80 chars so it survives on a narrow terminal
+            "filter: mine,age>6m,status!=done, status=/status!= (unset/set); blank clears",
         )
 
     def action_open_sort(self) -> None:
