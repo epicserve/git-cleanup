@@ -234,9 +234,7 @@ def _read_stash_diff(ref: str) -> str:
 def _protect(branch: BranchInfo, current: str | None, default: str, config: Config) -> bool:
     """Final safety re-check before any destructive action."""
     return (
-        branch.name == current
-        or branch.name == default
-        or branch.name in config.protected_branches
+        branch.name == current or branch.name == default or branch.name in config.protected_branches
     )
 
 
@@ -330,9 +328,7 @@ def run(args: argparse.Namespace) -> int:
         state.save_repo_state(root, {"filter": filter_spec, "sort": sort_spec})
 
     web_url = gitops.origin_web_url()
-    compare_url = (
-        partial(gitops.compare_url, web_url, scan.default_branch) if web_url else None
-    )
+    compare_url = partial(gitops.compare_url, web_url, scan.default_branch) if web_url else None
 
     # the TUI gets every branch; it applies filter/sort itself, so filters
     # can be loosened in-session to reveal hidden branches

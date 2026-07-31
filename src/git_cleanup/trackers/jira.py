@@ -50,8 +50,7 @@ class JiraTracker:
         except (httpx.HTTPError, httpx.InvalidURL) as exc:
             detail = str(exc) or exc.__class__.__name__
             _console.print(
-                f"[yellow]⚠ Jira unavailable, continuing with git-only info: "
-                f"{detail}[/yellow]"
+                f"[yellow]⚠ Jira unavailable, continuing with git-only info: {detail}[/yellow]"
             )
             return {}
         return results

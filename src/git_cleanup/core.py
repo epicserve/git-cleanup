@@ -82,9 +82,7 @@ def scan_repo(
     try:
         raw_worktrees = gitops.list_worktrees(cwd=cwd)
         dirty_counts = {
-            raw.path: gitops.worktree_dirty_count(raw.path)
-            for raw in raw_worktrees
-            if not raw.bare
+            raw.path: gitops.worktree_dirty_count(raw.path) for raw in raw_worktrees if not raw.bare
         }
         worktrees = planner.build_worktrees(
             raw_worktrees,

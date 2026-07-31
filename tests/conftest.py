@@ -70,9 +70,7 @@ def repo(tmp_path: Path) -> Path:
     git("init", "--bare", "--initial-branch=main", cwd=origin)
 
     clone = tmp_path / "work"
-    subprocess.run(
-        ["git", "clone", str(origin), str(clone)], capture_output=True, check=True
-    )
+    subprocess.run(["git", "clone", str(origin), str(clone)], capture_output=True, check=True)
     git("config", "user.email", ME, cwd=clone)
     git("config", "user.name", "Brent", cwd=clone)
     git("checkout", "-b", "main", cwd=clone)

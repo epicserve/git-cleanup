@@ -37,7 +37,9 @@ def test_batch_fetch_single_request():
     route = respx.post(f"{BASE}/rest/api/3/search/jql").mock(
         return_value=httpx.Response(
             200,
-            json={"issues": [jira_issue("ABC-1"), jira_issue("ABC-2", "In Review", "indeterminate")]},
+            json={
+                "issues": [jira_issue("ABC-1"), jira_issue("ABC-2", "In Review", "indeterminate")]
+            },
         )
     )
     result = make_tracker().fetch_issues(["ABC-1", "ABC-2", "ABC-1"])  # dupe collapses

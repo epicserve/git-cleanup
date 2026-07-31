@@ -175,7 +175,10 @@ def test_sort_branches_multi_column():
 
 
 def test_parse_filter():
-    assert planner.parse_filter("mine,!merged") == [("bool", "mine", True), ("bool", "merged", False)]
+    assert planner.parse_filter("mine,!merged") == [
+        ("bool", "mine", True),
+        ("bool", "merged", False),
+    ]
     assert planner.parse_filter("age>90") == [("age", ">", 90)]
     assert planner.parse_filter("age<=6m") == [("age", "<=", 180)]
     assert planner.parse_filter("age>1y") == [("age", ">", 365)]
@@ -363,13 +366,9 @@ def test_recommend_worktree_prunable_ignores_authorship():
 
 def test_recommend_worktree_authorship_gate():
     branch = branch_for("theirs", merged=True, author_email=OTHER)
-    worktrees = wt_infos(
-        [raw_worktree("/repo", "main"), raw_worktree("/wt/a", "theirs")], [branch]
-    )
+    worktrees = wt_infos([raw_worktree("/repo", "main"), raw_worktree("/wt/a", "theirs")], [branch])
     assert recommend(worktrees, for_email=ME) == {}
-    assert recommend(worktrees, for_email=ME, include_all=True) == {
-        "/wt/a": WorktreeAction.REMOVE
-    }
+    assert recommend(worktrees, for_email=ME, include_all=True) == {"/wt/a": WorktreeAction.REMOVE}
 
 
 def test_recommend_worktree_skips_unremovable():

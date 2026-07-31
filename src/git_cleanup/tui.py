@@ -312,9 +312,7 @@ class ReviewScreen(ModalScreen[bool]):
     .stash-warning { border: round red; padding: 0 1; margin-top: 1; }
     """
 
-    def __init__(
-        self, outcome: Outcome, dry_run: bool, current_branch: str | None = None
-    ) -> None:
+    def __init__(self, outcome: Outcome, dry_run: bool, current_branch: str | None = None) -> None:
         super().__init__()
         self._outcome = outcome
         self._dry_run = dry_run
@@ -349,9 +347,7 @@ class ReviewScreen(ModalScreen[bool]):
             b for b, a in decisions if b.has_local and a in (Action.DELETE, Action.DELETE_LOCAL)
         ]
         remote = [b for b, a in decisions if b.has_remote and a is Action.DELETE]
-        kept_on_origin = {
-            b.name for b, a in decisions if a is Action.DELETE_LOCAL and b.has_remote
-        }
+        kept_on_origin = {b.name for b, a in decisions if a is Action.DELETE_LOCAL and b.has_remote}
 
         drops = [s for s, a in self._outcome.stashes if a is StashAction.DROP]
         restores = [(s, a) for s, a in self._outcome.stashes if a in RESTORE_ACTIONS]
@@ -566,9 +562,7 @@ class CleanupApp(App[Outcome | None]):
         )
         # pre-mark deletions only; archiving stays opt-in (shown as a hint)
         self.actions: dict[str, Action] = {
-            b.name: (
-                Action.DELETE if recommended.get(b.name) is Action.DELETE else Action.KEEP
-            )
+            b.name: (Action.DELETE if recommended.get(b.name) is Action.DELETE else Action.KEEP)
             for b in self._all
             if not (b.is_current or b.is_default or b.is_protected)
         }
@@ -1051,9 +1045,7 @@ class CleanupApp(App[Outcome | None]):
         if wt is None:
             return
         current = self.worktree_actions.get(wt.name, WorktreeAction.KEEP)
-        following = (
-            WorktreeAction.REMOVE if current is WorktreeAction.KEEP else WorktreeAction.KEEP
-        )
+        following = WorktreeAction.REMOVE if current is WorktreeAction.KEEP else WorktreeAction.KEEP
         self._set_worktree_action(wt, following)
 
     # ---------- stash actions ----------

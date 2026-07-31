@@ -43,9 +43,7 @@ def build_branches(
         assert primary is not None
         # merged if the relevant ref tip is reachable from origin/<default>;
         # on divergence, require the side we'd delete to be merged
-        merged = all(
-            ref.refname in merged_names for ref in (local, remote) if ref is not None
-        )
+        merged = all(ref.refname in merged_names for ref in (local, remote) if ref is not None)
         branches.append(
             BranchInfo(
                 name=name,

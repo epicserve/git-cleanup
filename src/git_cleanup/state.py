@@ -17,7 +17,7 @@ def default_state_path(env: Mapping[str, str] | None = None) -> Path:
 def _read_all(path: Path) -> dict:
     try:
         data = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
     return data if isinstance(data, dict) else {}
 
