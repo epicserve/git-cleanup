@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from git_cleanup import cli, planner, state, tui
-from git_cleanup.models import Action, Outcome, WorktreeAction
+from git_cleanup.models import Action, Outcome, StashAction, WorktreeAction
 from tests.conftest import git
 
 
@@ -441,3 +441,228 @@ def test_filter_worktree_accepted_end_to_end(
 ):
     monkeypatch.chdir(repo_with_worktrees)
     assert run_cli("--dry-run", "--filter", "worktree", "--config", str(no_tracker_config)) == 0
+
+
+# ---------- stashes ----------
+
+
+def stash_shas(repo: Path) -> list[str]:
+    return [s.sha for s in cli.gitops.list_stashes(cwd=repo)]
+
+
+def test_stashes_dropped_in_descending_index_order(
+    repo_with_stashes, no_tracker_config, monkeypatch, drive_tui
+):
+    """The ordering test. A selector is a reflog position: dropping stash@{1}
+    renumbers {2}->{1} and {3}->{2}. Ascending order would drop b, then hit what
+    is now at {2} — which is d — leaving [a, c]. Descending order leaves [a, d].
+
+    This asserts on which stashes SURVIVE, so the bug it guards against shows up
+    as the wrong work destroyed, not merely as an error.
+    """
+    monkeypatch.chdir(repo_with_stashes)
+    a, b, c, d = stash_shas(repo_with_stashes)
+
+    def choose(branches, worktrees):
+        return Outcome(
+            stashes=[
+                (_stash_info(repo_with_stashes, "stash@{1}"), StashAction.DROP),
+                (_stash_info(repo_with_stashes, "stash@{2}"), StashAction.DROP),
+            ]
+        )
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    assert stash_shas(repo_with_stashes) == [a, d]
+
+
+def _stash_info(repo: Path, selector: str):
+    """The StashInfo the TUI would have handed back for a given selector."""
+    raws = cli.gitops.list_stashes(cwd=repo)
+    return planner.build_stashes(raws)[
+        next(i for i, r in enumerate(raws) if r.selector == selector)
+    ]
+
+
+def test_dry_run_drops_no_stashes(
+    repo_with_stashes, no_tracker_config, monkeypatch, drive_tui, capsys
+):
+    monkeypatch.chdir(repo_with_stashes)
+    before = stash_shas(repo_with_stashes)
+
+    def choose(branches, worktrees):
+        return Outcome(stashes=[(_stash_info(repo_with_stashes, "stash@{1}"), StashAction.DROP)])
+
+    drive_tui(choose)
+    assert run_cli("--dry-run", "--config", str(no_tracker_config)) == 0
+    assert stash_shas(repo_with_stashes) == before
+    assert "would drop stash@{1}" in capsys.readouterr().out
+
+
+def test_pop_restores_and_removes(
+    repo_with_stashes, no_tracker_config, monkeypatch, drive_tui, capsys
+):
+    monkeypatch.chdir(repo_with_stashes)
+
+    def choose(branches, worktrees):
+        return Outcome(stashes=[(_stash_info(repo_with_stashes, "stash@{0}"), StashAction.POP)])
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    assert (repo_with_stashes / "base.txt").read_text() == "named edit"
+    assert len(stash_shas(repo_with_stashes)) == 3
+    assert "restored 1 stashes" in capsys.readouterr().out
+
+
+def test_apply_restores_and_keeps(repo_with_stashes, no_tracker_config, monkeypatch, drive_tui):
+    monkeypatch.chdir(repo_with_stashes)
+
+    def choose(branches, worktrees):
+        return Outcome(stashes=[(_stash_info(repo_with_stashes, "stash@{0}"), StashAction.APPLY)])
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    assert (repo_with_stashes / "base.txt").read_text() == "named edit"
+    assert len(stash_shas(repo_with_stashes)) == 4
+
+
+def test_pop_refused_by_a_dirty_tree_warns_and_keeps_the_stash(
+    repo_with_stashes, no_tracker_config, monkeypatch, drive_tui, capsys
+):
+    monkeypatch.chdir(repo_with_stashes)
+    marked = _stash_info(repo_with_stashes, "stash@{0}")
+    (repo_with_stashes / "base.txt").write_text("local edit I care about")
+
+    drive_tui(lambda b, w: Outcome(stashes=[(marked, StashAction.POP)]))
+    assert run_cli("--config", str(no_tracker_config)) == 0  # a warning, not a crash
+
+    out = capsys.readouterr().out
+    assert "could not pop stash@{0}" in out and "still in the list" in out
+    assert len(stash_shas(repo_with_stashes)) == 4
+    assert (repo_with_stashes / "base.txt").read_text() == "local edit I care about"
+
+
+def test_pop_with_a_conflict_warns_and_keeps_the_stash(
+    repo_with_stashes, no_tracker_config, monkeypatch, drive_tui, capsys
+):
+    monkeypatch.chdir(repo_with_stashes)
+    marked = _stash_info(repo_with_stashes, "stash@{0}")
+    (repo_with_stashes / "base.txt").write_text("committed conflicting edit")
+    git("commit", "-am", "conflicting change", cwd=repo_with_stashes)
+
+    drive_tui(lambda b, w: Outcome(stashes=[(marked, StashAction.POP)]))
+    assert run_cli("--config", str(no_tracker_config)) == 0
+
+    out = capsys.readouterr().out
+    assert "applied with conflicts" in out
+    assert "<<<<<<<" in (repo_with_stashes / "base.txt").read_text()
+    assert len(stash_shas(repo_with_stashes)) == 4
+
+
+def test_stale_stash_decision_is_skipped(
+    repo_with_stashes, no_tracker_config, monkeypatch, drive_tui, capsys
+):
+    """A TUI session can sit open while another terminal pops something."""
+    monkeypatch.chdir(repo_with_stashes)
+    marked = _stash_info(repo_with_stashes, "stash@{1}")
+
+    def choose(branches, worktrees):
+        # something else drops stash@{0}, so {1} now points at a different commit
+        cli.gitops.drop_stash("stash@{0}", cwd=repo_with_stashes)
+        return Outcome(stashes=[(marked, StashAction.DROP)])
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    out = capsys.readouterr().out
+    assert "no longer points at" in out
+    assert len(stash_shas(repo_with_stashes)) == 3  # only the outside drop happened
+
+
+def test_second_restore_in_an_outcome_is_refused(
+    repo_with_stashes, no_tracker_config, monkeypatch, drive_tui, capsys
+):
+    """The TUI caps restores at one; the executor re-asserts it for any caller."""
+    monkeypatch.chdir(repo_with_stashes)
+
+    def choose(branches, worktrees):
+        return Outcome(
+            stashes=[
+                (_stash_info(repo_with_stashes, "stash@{0}"), StashAction.APPLY),
+                (_stash_info(repo_with_stashes, "stash@{1}"), StashAction.APPLY),
+            ]
+        )
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    out = capsys.readouterr().out
+    # descending order reaches stash@{1} first, so stash@{0} is the one refused
+    assert "skipping apply of stash@{0}: one restore per run" in out
+    assert out.count("one restore per run") == 1
+
+
+def test_stashes_execute_after_branches(
+    repo_with_stashes, no_tracker_config, monkeypatch, drive_tui
+):
+    order: list[str] = []
+    monkeypatch.setattr(cli, "_delete_local", lambda b, *, dry_run: order.append("branch") or True)
+    monkeypatch.setattr(cli, "_drop_stash", lambda s, *, dry_run: order.append("stash") or True)
+    monkeypatch.chdir(repo_with_stashes)
+
+    def choose(branches, worktrees):
+        by_name = {b.name: b for b in branches}
+        return Outcome(
+            branches=[(by_name["old-experiment"], Action.DELETE_LOCAL)],
+            stashes=[(_stash_info(repo_with_stashes, "stash@{0}"), StashAction.DROP)],
+        )
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    assert order == ["branch", "stash"]
+
+
+def test_summary_unchanged_when_no_stashes_marked(
+    repo, no_tracker_config, monkeypatch, drive_tui, capsys
+):
+    monkeypatch.chdir(repo)
+
+    def choose(branches, worktrees):
+        by_name = {b.name: b for b in branches}
+        return Outcome(branches=[(by_name["abc-123-fix-login"], Action.DELETE_LOCAL)])
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    out = capsys.readouterr().out
+    assert "Done: deleted 1 local, 0 remote, archived 0." in out
+    assert "stashes" not in out.split("Done:")[1]
+
+
+def test_stash_table_printed_in_non_interactive_mode(
+    repo_with_stashes, no_tracker_config, monkeypatch, capsys, wide_console
+):
+    monkeypatch.chdir(repo_with_stashes)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    out = capsys.readouterr().out
+    assert "Stashes" in out and "stash@{0}" in out and "fix: login: retry" in out
+
+
+def test_no_stash_table_without_stashes(repo, no_tracker_config, monkeypatch, capsys, wide_console):
+    monkeypatch.chdir(repo)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+    assert "Stashes" not in capsys.readouterr().out
+
+
+def test_read_stash_diff_returns_error_text_instead_of_raising(repo_with_stashes, monkeypatch):
+    """tui.py has no git import, so the callable must never raise."""
+    monkeypatch.chdir(repo_with_stashes)
+    assert "diff --git" in cli._read_stash_diff("stash@{0}")
+    assert "could not read this stash" in cli._read_stash_diff("stash@{99}")
+
+
+def test_stash_diff_callable_and_stashes_passed_to_tui(
+    repo_with_stashes, no_tracker_config, accept_recommended, monkeypatch
+):
+    monkeypatch.chdir(repo_with_stashes)
+    assert run_cli("--dry-run", "--config", str(no_tracker_config)) == 0
+    kwargs = accept_recommended["kwargs"][0]
+    assert len(kwargs["stashes"]) == 4
+    assert kwargs["stash_diff"] is cli._read_stash_diff

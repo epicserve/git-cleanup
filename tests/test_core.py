@@ -97,3 +97,32 @@ def test_scan_repo_degrades_when_worktree_listing_fails(repo: Path, monkeypatch,
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "could not list worktrees" in captured.err
+
+
+def test_scan_repo_stashes(repo_with_stashes: Path, capsys):
+    scan = scan_repo(make_config(), cwd=repo_with_stashes)
+
+    assert [s.selector for s in scan.stashes] == [f"stash@{{{i}}}" for i in range(4)]
+    assert scan.stashes[0].message == "fix: login: retry"
+    assert scan.stashes[1].wip and scan.stashes[1].branch == "abc-201-new-dashboard"
+    assert scan.stashes[2].has_untracked and scan.stashes[2].file_count == 2
+    assert scan.stashes[3].branch is None  # detached
+    assert capsys.readouterr().out == ""
+
+
+def test_scan_repo_no_stashes(repo: Path):
+    assert scan_repo(make_config(), cwd=repo).stashes == []
+
+
+def test_scan_repo_degrades_when_stash_listing_fails(repo: Path, monkeypatch, capsys):
+    def boom(cwd=None):
+        raise GitError("stash list exploded")
+
+    monkeypatch.setattr(gitops, "list_stashes", boom)
+    scan = scan_repo(make_config(), cwd=repo)
+
+    assert scan.stashes == []
+    assert scan.branches  # branch data still there
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "could not list stashes" in captured.err

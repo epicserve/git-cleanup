@@ -4,9 +4,11 @@ Interactively clean up git branches that are merged, done in your issue tracker,
 
 `git-cleanup` fetches and prunes `origin`, gathers every local and remote branch (author,
 age, merged status, ahead/behind counts vs upstream, and linked issue status), then opens
-a full-screen TUI with two tabs. **Branches** is one table of all branches where each row
+a full-screen TUI with three tabs. **Branches** is one table of all branches where each row
 carries an action you control. **Worktrees** lists every `git worktree` with its branch,
-its count of uncommitted changes, and whether it is broken or locked.
+its count of uncommitted changes, and whether it is broken or locked. **Stashes** lists
+every stash with its message, origin branch, age, and file count, alongside a live diff
+pane so you can read a stash before deciding its fate.
 
 ### Branches
 
@@ -33,6 +35,21 @@ removals run **before** branch deletions, so marking both in one session works: 
 branch -d` refuses a branch that is checked out anywhere, and the review screen tells you
 which deletions are waiting on which removal.
 
+### Stashes
+
+- **drop** — discards the stash without restoring it. Recoverable: git keeps the commit
+  reachable until the next `gc`, and the review screen prints the
+  `git stash store <sha>` you would need.
+- **pop** — restores the stash into your working tree, then removes it from the list.
+- **apply** — restores it but keeps it in the list.
+- **keep** — the default; nothing happens.
+
+Stashes are **never pre-marked** — a stash is uncommitted work by definition, there is no
+"merged" signal to key off, and an old stash is exactly the one you forgot about but may
+still want. Only **one pop or apply per run** is allowed: a restore is the only action here
+that writes to your working tree, and a failed one leaves it dirty, which would make every
+restore after it fail too. Drops are unlimited.
+
 Press Enter to review everything grouped (with a prominent warning for anything deleted
 on origin or removed with `--force`), confirm, and it executes. Quit with `q` and nothing
 changes.
@@ -42,19 +59,28 @@ changes.
 | Key | Action |
 |---|---|
 | ↑/↓, PgUp/PgDn | Move |
-| `b` / `w` | Switch to the Branches / Worktrees tab |
-| `space` | Cycle keep → delete → delete-local → archive (Worktrees: toggle keep ⇄ remove) |
-| `d` | Mark delete; press again to toggle between delete and delete-local (Worktrees: mark remove) |
-| `a` / `k` | Mark archive / keep |
+| `[` / `]` | Previous / next tab |
+| `b` / `w` / `t` | Jump straight to Branches / Worktrees / Stashes |
+| `space` | Cycle keep → delete → delete-local → archive (Worktrees: toggle keep ⇄ remove; Stashes: cycle keep → drop → pop → apply) |
+| `d` | Mark delete; press again to toggle between delete and delete-local (Worktrees: mark remove; Stashes: mark drop) |
+| `a` / `k` | Mark archive / keep (Stashes: `a` marks apply) |
+| `p` | Mark pop (Stashes only) |
 | `o` | Open the branch's compare page on origin (vs the default branch) |
 | `/` | Live filter (same syntax as `--filter`) |
 | `s` | Live sort (same syntax as `--sort`) |
 | `r` | Reset filter & sort to defaults |
+| `Ctrl+D` / `Ctrl+U` | Scroll the stash diff pane |
 | `Enter` | Review and confirm |
 | `q` / `Esc` | Quit without changes |
 
-The footer always shows the keys for the tab you are on. `/`, `s`, `r`, and `o` are
-branch-only — worktree lists are short enough not to need filtering or sorting.
+The footer always shows the keys for the tab you are on, and advertises `[`/`]` for tab
+switching; `b`/`w`/`t` work too but stay out of the footer to keep it to one line. `/`, `s`,
+`r`, and `o` are branch-only — worktree and stash lists are short enough not to need
+filtering or sorting, and stashes must never be reordered, because their `stash@{N}`
+numbering is positional.
+
+On the Stashes tab the diff pane sits to the right of the table at 100 columns or wider,
+and moves below it on narrower terminals so the table always has room for every column.
 
 Filter and sort changes are remembered per repository, so your view comes back the next
 time you run `git-cleanup` there. `r` resets (and forgets) them.
@@ -126,6 +152,24 @@ For worktrees specifically:
   deletes its branch.
 - If listing worktrees fails for an unrelated reason, the run degrades to branches-only
   with a warning on stderr.
+
+For stashes specifically:
+
+- Nothing is ever pre-marked, and only one pop/apply is allowed per run.
+- A `stash@{N}` selector is a reflog *position*, not an id: dropping `stash@{1}` renumbers
+  `{2}` to `{1}`. Marked stashes are therefore executed in **descending index order**, so
+  the ones not yet touched never move, and each is re-checked against the commit it pointed
+  at during the scan — a stash that changed underneath you (say, popped in another
+  terminal) is skipped with a warning rather than acted on.
+- Dropping is **recoverable** until git's next `gc`: the review screen prints the
+  `git stash store <sha>` that would bring one back.
+- git allows restoring a stash onto a **different branch** than it was made on with no
+  warning of its own, so the tab colors the mismatch and the review screen spells it out.
+- A failed pop always leaves the stash in the list. If it conflicted, the conflict markers
+  are in your files and the stash is still there to retry or drop by hand.
+- A restore lands in whichever worktree you ran `git-cleanup` from, since `refs/stash` is
+  repo-global but the restore writes to the current working tree.
+- If listing stashes fails, the run degrades to no Stashes tab with a warning on stderr.
 
 ## Configuration
 

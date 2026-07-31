@@ -11,7 +11,15 @@ from git_cleanup import __version__, gitops, planner, state, tui, ui
 from git_cleanup.config import Config, load_config
 from git_cleanup.core import scan_repo
 from git_cleanup.gitops import GitError
-from git_cleanup.models import Action, BranchInfo, WorktreeAction, WorktreeInfo
+from git_cleanup.models import (
+    RESTORE_ACTIONS,
+    Action,
+    BranchInfo,
+    StashAction,
+    StashInfo,
+    WorktreeAction,
+    WorktreeInfo,
+)
 
 
 def _interactive() -> bool:
@@ -169,6 +177,59 @@ def _prune_worktrees(marked: int, *, dry_run: bool) -> int:
     return len(pruned)
 
 
+def _drop_stash(stash: StashInfo, *, dry_run: bool) -> bool:
+    if dry_run:
+        ui.dry_run_note(f"drop {stash.selector} ({stash.message})")
+        return True
+    try:
+        gitops.drop_stash(stash.selector)
+        ui.info(f"  dropped [bold]{stash.selector}[/bold] ({stash.sha[:8]})")
+        return True
+    except GitError as exc:
+        ui.warn(f"could not drop {stash.selector}: {exc}")
+        return False
+
+
+def _restore_stash(stash: StashInfo, *, keep: bool, dry_run: bool) -> bool:
+    verb, past = ("apply", "applied") if keep else ("pop", "popped")
+    if dry_run:
+        ui.dry_run_note(f"{verb} {stash.selector} onto the current branch")
+        return True
+    try:
+        result = gitops.restore_stash(stash.selector, keep=keep)
+    except GitError as exc:  # the selector is gone, or git could not run at all
+        ui.warn(f"could not {verb} {stash.selector}: {exc}")
+        return False
+    if result.ok:
+        kept = " (kept in the list)" if keep else ""
+        ui.info(f"  {past} [bold]{stash.selector}[/bold]{kept}")
+        return True
+    if result.conflicted:
+        ui.warn(
+            f"{stash.selector} was applied with conflicts — resolve them, then drop it "
+            f"by hand; it is still in the list. {result.detail}"
+        )
+    else:
+        # deliberately not "nothing changed": a clobber refusal does leave the
+        # tree untouched, but an untracked-file collision can fail after a
+        # partial restore, and the exit code cannot tell the two apart
+        ui.warn(f"could not {verb} {stash.selector} (still in the list): {result.detail}")
+    return False
+
+
+def _read_stash_diff(ref: str) -> str:
+    """Patch text for the TUI's detail pane.
+
+    Returns the failure as text rather than raising: tui.py has no git import so
+    it cannot catch GitError, and the injected-capability contract there is
+    "returns something printable, never raises".
+    """
+    try:
+        return gitops.stash_patch(ref)
+    except GitError as exc:
+        return f"could not read this stash: {exc}"
+
+
 def _protect(branch: BranchInfo, current: str | None, default: str, config: Config) -> bool:
     """Final safety re-check before any destructive action."""
     return (
@@ -185,6 +246,21 @@ def _protect_worktree(worktree: WorktreeInfo) -> bool:
     red and the user confirmed, so --force is intended here.
     """
     return worktree.is_main or worktree.is_current or worktree.locked
+
+
+def _stash_unchanged(stash: StashInfo) -> bool:
+    """Final safety re-check, the stash counterpart of _protect_worktree.
+
+    Reflog positions shift, and a TUI session can sit open while another terminal
+    pops something. One rev-parse is all that stands between a stale decision and
+    dropping work the user never looked at. Runs in dry-run too — it is read-only,
+    and a dry run that reports a drop it would actually refuse is worse than
+    useless.
+    """
+    try:
+        return gitops.stash_sha(stash.selector) == stash.sha
+    except GitError:
+        return False
 
 
 def run(args: argparse.Namespace) -> int:
@@ -243,6 +319,9 @@ def run(args: argparse.Namespace) -> int:
         # one), which is not worth a table of its own
         if len(scan.worktrees) > 1:
             ui.render_worktree_table(scan.worktrees)
+        # no >1 threshold here, unlike worktrees: zero stashes is genuinely zero
+        if scan.stashes:
+            ui.render_stash_table(scan.stashes)
         ui.warn("stdin is not a terminal; skipping interactive cleanup")
         return 0
 
@@ -267,6 +346,8 @@ def run(args: argparse.Namespace) -> int:
         on_view_change=persist_view,
         compare_url=compare_url,
         worktrees=scan.worktrees,
+        stashes=scan.stashes,
+        stash_diff=_read_stash_diff,
     )
     if outcome is None:
         ui.info("Aborted; no changes made.")
@@ -303,15 +384,50 @@ def run(args: argparse.Namespace) -> int:
             if _archive(branch, dry_run=args.dry_run):
                 archived += 1
 
+    # STASHES LAST, IN DESCENDING INDEX ORDER, and the order is load-bearing
+    # rather than cosmetic: a stash selector is a reflog position. Dropping
+    # stash@{1} renumbers everything above it ({2}->{1}, {3}->{2}, ...) and
+    # leaves everything below alone. Going highest-first means every selector we
+    # have not touched yet sits below the one we are touching, so it never moves.
+    # Ascending order would silently drop the WRONG stash. Do NOT split this into
+    # "all drops, then the restore" either — that reorders across indices and
+    # reintroduces the same bug.
+    dropped_stashes = restored_stashes = 0
+    restore_done = False
+    for stash, stash_action in sorted(
+        outcome.stashes, key=lambda pair: pair[0].index, reverse=True
+    ):
+        if stash_action is StashAction.KEEP:
+            continue
+        if stash_action in RESTORE_ACTIONS and restore_done:
+            # the TUI caps this at one; re-asserted here so the invariant holds
+            # for any caller, since scan_repo is a documented public entry point
+            ui.warn(f"skipping {stash_action} of {stash.selector}: one restore per run")
+            continue
+        if not _stash_unchanged(stash):
+            ui.warn(f"skipping {stash.selector}: it no longer points at {stash.sha[:8]}")
+            continue
+        if stash_action is StashAction.DROP:
+            if _drop_stash(stash, dry_run=args.dry_run):
+                dropped_stashes += 1
+        else:
+            restore_done = True
+            if _restore_stash(stash, keep=stash_action is StashAction.APPLY, dry_run=args.dry_run):
+                restored_stashes += 1
+
     prefix = "[cyan]\\[dry-run][/cyan] " if args.dry_run else ""
     summary = (
         f"\n{prefix}Done: deleted {deleted_local} local, "
         f"{deleted_remote} remote, archived {archived}"
     )
-    # appended only when something was removed, so repos without worktrees
-    # produce byte-identical output
+    # each clause is appended only when something happened, so repos without
+    # worktrees or stashes produce byte-identical output
     if removed_worktrees:
         summary += f", removed {removed_worktrees} worktrees"
+    if restored_stashes:
+        summary += f", restored {restored_stashes} stashes"
+    if dropped_stashes:
+        summary += f", dropped {dropped_stashes} stashes"
     ui.info(f"{summary}.")
     return 0
 

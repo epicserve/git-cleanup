@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from git_cleanup.gitops import RawWorktree
+from git_cleanup.gitops import RawStash, RawWorktree
 
 ME = "brent@example.com"
 OTHER = "sarah@example.com"
@@ -160,4 +161,57 @@ def raw_worktree(path: str, branch: str | None = None, **flags) -> RawWorktree:
         head=flags.pop("head", "0" * 40),
         branch=f"refs/heads/{branch}" if branch else None,
         **flags,
+    )
+
+
+@pytest.fixture
+def repo_with_stashes(repo: Path) -> Path:
+    """`repo` plus four stashes covering every subject shape the parser handles.
+
+    Created newest-last, so reflog order (stash@{0} is the NEWEST) ends up:
+
+      stash@{0}  On main: fix: login: retry             a message containing ': '
+      stash@{1}  WIP on abc-201-new-dashboard: <sha> …  no -m, so git's WIP subject
+      stash@{2}  On main: with untracked                -u, so 3 parents
+      stash@{3}  On (no branch): detached               made on a detached HEAD
+
+    INVARIANT: this leaves the working tree CLEAN. `git stash pop` refuses
+    outright when a tracked file it would restore is dirty, so every pop test
+    depends on it. The `git stash store` shape (a subject with no "On" prefix) is
+    deliberately absent — store leaves the tree dirty — and is covered by the
+    pure parse_stash_subject test instead.
+    """
+    # 3: detached HEAD -> "On (no branch): ...". base.txt exists in every commit,
+    # so editing it needs no `git add`.
+    git("checkout", "--detach", "main", cwd=repo)
+    (repo / "base.txt").write_text("detached edit")
+    git("stash", "push", "-m", "detached", cwd=repo)
+    git("checkout", "main", cwd=repo)
+
+    # 2: -u -> 3 parents, with the untracked file captured in the stash
+    (repo / "base.txt").write_text("edit with untracked")
+    (repo / "extra.txt").write_text("untracked")
+    git("stash", "push", "-u", "-m", "with untracked", cwd=repo)
+
+    # 1: no -m on another branch -> "WIP on abc-201-new-dashboard: <sha> <subj>"
+    git("checkout", "abc-201-new-dashboard", cwd=repo)
+    (repo / "dash.txt").write_text("wip edit")
+    git("stash", cwd=repo)
+    git("checkout", "main", cwd=repo)
+
+    # 0: a message that itself contains ': '
+    (repo / "base.txt").write_text("named edit")
+    git("stash", "push", "-m", "fix: login: retry", cwd=repo)
+    return repo
+
+
+def raw_stash(index: int, subject: str, **flags) -> RawStash:
+    """Convenience builder for the pure (no-git) parser and planner tests."""
+    return RawStash(
+        index=index,
+        selector=flags.pop("selector", f"stash@{{{index}}}"),
+        sha=flags.pop("sha", f"{index:040d}"),
+        created_at=flags.pop("created_at", datetime(2026, 7, 1, tzinfo=UTC)),
+        parents=flags.pop("parents", ("p1", "p2")),
+        subject=subject,
     )

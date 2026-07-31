@@ -6,7 +6,7 @@ import pytest
 from git_cleanup import planner
 from git_cleanup.gitops import RawRef
 from git_cleanup.models import Action, BranchInfo, IssueInfo, IssueState, WorktreeAction
-from tests.conftest import raw_worktree
+from tests.conftest import raw_stash, raw_worktree
 
 ME = "brent@example.com"
 OTHER = "sarah@example.com"
@@ -432,3 +432,63 @@ def test_worktree_sort_orders_by_presence():
     branches = [branch_for("a"), branch_for("b", worktree_path=Path("/wt/b"))]
     result = planner.sort_branches(branches, planner.parse_sort("-worktree"))
     assert [b.name for b in result] == ["b", "a"]
+
+
+# ---------- stashes ----------
+
+
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        ("On main: hello", ("main", "hello", False)),
+        # branch names cannot contain ':', so the message keeps its later ': '
+        ("On feature/x-1: fix: the thing", ("feature/x-1", "fix: the thing", False)),
+        ("WIP on main: 1a2b3c4 add login", ("main", "1a2b3c4 add login", True)),
+        # "(no branch)" is a detached-HEAD sentinel, not a branch
+        ("On (no branch): detached", (None, "detached", False)),
+        ("WIP on (no branch): 1a2b3c4 subj", (None, "1a2b3c4 subj", True)),
+        # `git stash store -m X` writes X verbatim: shown whole, not mangled
+        ("stored by hand", (None, "stored by hand", False)),
+        ("Onmain: x", (None, "Onmain: x", False)),
+        ("on main: x", (None, "on main: x", False)),  # case is exact
+    ],
+)
+def test_parse_stash_subject(subject: str, expected: tuple):
+    assert planner.parse_stash_subject(subject) == expected
+
+
+def test_build_stashes_maps_fields_and_file_counts():
+    stashes = planner.build_stashes(
+        [raw_stash(0, "On main: named"), raw_stash(1, "On main: other")],
+        file_counts={"stash@{0}": 3},
+    )
+    assert (stashes[0].branch, stashes[0].message) == ("main", "named")
+    assert stashes[0].file_count == 3
+    assert stashes[1].file_count is None  # absent from the mapping
+
+
+def test_build_stashes_marks_untracked_from_parent_count():
+    plain, with_untracked = planner.build_stashes(
+        [
+            raw_stash(0, "On main: plain"),
+            raw_stash(1, "On main: unt", parents=("p1", "p2", "p3")),
+        ]
+    )
+    assert not plain.has_untracked
+    assert with_untracked.has_untracked
+
+
+def test_build_stashes_never_reorders_by_date():
+    """Reflog order is not date order — stash@{0} can be older than stash@{1} —
+    so reordering would desync the numbers the user reads from the selectors the
+    executor acts on."""
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 6, 1, tzinfo=UTC)
+    stashes = planner.build_stashes(
+        [
+            raw_stash(0, "On main: older but first", created_at=older),
+            raw_stash(1, "On main: newer but second", created_at=newer),
+        ]
+    )
+    assert [s.index for s in stashes] == [0, 1]
+    assert stashes[0].created_at == older

@@ -29,6 +29,18 @@ class WorktreeAction(StrEnum):
     REMOVE = "remove"
 
 
+class StashAction(StrEnum):
+    KEEP = "keep"
+    DROP = "drop"  # discard without restoring
+    POP = "pop"  # restore, then remove from the list
+    APPLY = "apply"  # restore and keep in the list
+
+
+# The two actions that write to the working tree. One definition, shared by the
+# TUI's one-restore-per-run rule and the executor's re-assertion of it.
+RESTORE_ACTIONS = frozenset({StashAction.POP, StashAction.APPLY})
+
+
 @dataclass(frozen=True)
 class IssueInfo:
     key: str
@@ -163,12 +175,57 @@ class WorktreeInfo:
 
 
 @dataclass(frozen=True)
+class StashInfo:
+    """One reflog entry of refs/stash.
+
+    Frozen, unlike BranchInfo and WorktreeInfo: nothing back-fills a stash after
+    construction — there is no tracker join and no worktree join.
+    """
+
+    index: int
+    selector: str  # "stash@{N}" exactly as git printed it
+    sha: str
+    created_at: datetime
+    subject: str  # raw %gs, kept for the review screen and debugging
+    branch: str | None  # None for "(no branch)" or an unparseable subject
+    message: str
+    wip: bool  # git's own WIP subject rather than one the user chose
+    parent_count: int
+    file_count: int | None = None  # None when git could not look
+
+    @property
+    def name(self) -> str:
+        """Decision and row key.
+
+        The selector, not the sha: a sha is not unique (`git stash store` twice,
+        or two identical stashes inside one second), while reflog positions are
+        unique within a single scan. The TUI never mutates the repo, so a
+        scan-time snapshot stays coherent for the whole session; the instability
+        of reflog positions only bites at execution time, which is why the
+        executor works in descending index order and re-checks the sha first.
+        """
+        return self.selector
+
+    @property
+    def has_untracked(self) -> bool:
+        """A stash is a merge commit: 3 parents means `-u` was used and ^3 holds
+        the untracked tree. Free — no extra git call."""
+        return self.parent_count >= 3
+
+    @property
+    def age_days(self) -> int:
+        """Only a creation date exists — a stash commit is immutable."""
+        return max(0, (datetime.now(UTC) - self.created_at).days)
+
+
+@dataclass(frozen=True)
 class Outcome:
     """The user's confirmed decisions. Lives here rather than in tui.py so that
     cli and core can import it without dragging textual into the import graph."""
 
     branches: list[tuple[BranchInfo, Action]] = field(default_factory=list)
     worktrees: list[tuple[WorktreeInfo, WorktreeAction]] = field(default_factory=list)
+    stashes: list[tuple[StashInfo, StashAction]] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.branches or self.worktrees)
+        return bool(self.branches or self.worktrees or self.stashes)

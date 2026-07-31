@@ -7,8 +7,15 @@ from rich.text import Text
 from textual.widgets import Button, DataTable, Static, Tabs
 
 from git_cleanup import planner
-from git_cleanup.models import Action, BranchInfo, WorktreeAction, WorktreeInfo
-from git_cleanup.tui import CleanupApp, ReviewScreen, SpecInput
+from git_cleanup.models import (
+    Action,
+    BranchInfo,
+    StashAction,
+    StashInfo,
+    WorktreeAction,
+    WorktreeInfo,
+)
+from git_cleanup.tui import CleanupApp, DiffPane, ReviewScreen, SpecInput
 
 ME = "brent@example.com"
 OTHER = "sarah@example.com"
@@ -63,6 +70,7 @@ def make_app(**overrides) -> CleanupApp:
     )
     branches = overrides.pop("branches", None) or default_branches()
     kwargs["worktrees"] = overrides.pop("worktrees", [])
+    kwargs["stashes"] = overrides.pop("stashes", [])
     kwargs.update(overrides)
     return CleanupApp(branches, **kwargs)
 
@@ -763,3 +771,383 @@ async def test_empty_worktree_list_is_harmless():
         await pilot.press("enter")  # nothing marked on this tab
         assert app.is_running
         assert "0 worktrees" in status_text(app)
+
+
+# ---------- stashes ----------
+
+
+def make_stash(index: int, message: str, **overrides) -> StashInfo:
+    defaults = dict(
+        index=index,
+        selector=f"stash@{{{index}}}",
+        sha=f"sha{index}",
+        created_at=datetime.now(UTC) - timedelta(days=index + 1),
+        subject=f"On main: {message}",
+        branch="main",
+        message=message,
+        wip=False,
+        parent_count=2,
+        file_count=1,
+    )
+    defaults.update(overrides)
+    return StashInfo(**defaults)
+
+
+def stash_fixture() -> tuple[list[BranchInfo], list[StashInfo]]:
+    """default_branches() plus four stashes: one on the current branch, one WIP
+    on another branch (cross-branch), one with untracked files, one detached."""
+    stashes = [
+        make_stash(0, "fix: login: retry"),
+        make_stash(1, "abc1234 dashboard", branch="abc-2-open", wip=True),
+        make_stash(2, "with untracked", parent_count=3, file_count=5),
+        make_stash(3, "detached", branch=None, subject="On (no branch): detached"),
+    ]
+    return default_branches(), stashes
+
+
+def stash_app(**overrides) -> CleanupApp:
+    branches, stashes = stash_fixture()
+    return make_app(branches=branches, stashes=stashes, **overrides)
+
+
+async def to_stashes(app: CleanupApp, pilot) -> None:
+    """Tab activation is message-driven, so the pause is required."""
+    await pilot.press("t")
+    await pilot.pause()
+
+
+def stash_table(app: CleanupApp) -> DataTable:
+    return app.query_one("#stash-table", DataTable)
+
+
+def diff_pane(app: CleanupApp) -> DiffPane:
+    return app.query_one("#stash-diff", DiffPane)
+
+
+async def test_stashes_are_never_premarked():
+    """A stash is uncommitted work by definition, so nothing is auto-marked."""
+    app = stash_app()
+    async with app.run_test():
+        assert set(app.stash_actions) == {f"stash@{{{i}}}" for i in range(4)}
+        assert all(a is StashAction.KEEP for a in app.stash_actions.values())
+
+
+async def test_brackets_cycle_all_three_tabs_and_wrap():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        assert app._active_tab == "tab-branches"
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+        assert app._active_tab == "tab-worktrees"
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+        assert app._active_tab == "tab-stashes"
+        await pilot.press("right_square_bracket")  # wraps
+        await pilot.pause()
+        assert app._active_tab == "tab-branches"
+        await pilot.press("left_square_bracket")  # wraps backwards
+        await pilot.pause()
+        assert app._active_tab == "tab-stashes"
+
+
+async def test_t_focuses_stash_table():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        assert app.focused is stash_table(app)
+        await pilot.press("b")
+        await pilot.pause()
+        assert app.focused is app.query_one("#branch-table", DataTable)
+
+
+async def test_tab_key_does_not_steal_focus_for_the_diff_pane():
+    """The diff pane must not be focusable: focus landing there would kill every
+    StashTable row binding and empty the footer."""
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        assert not diff_pane(app).can_focus
+        await pilot.press("tab")
+        await pilot.pause()
+        assert app.focused is stash_table(app)
+
+
+async def test_stash_footer_keys_and_disabled_own_key():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        bindings = app.screen.active_bindings
+        assert bindings["d"].binding.description == "Drop"
+        assert bindings["p"].binding.description == "Pop"
+        assert bindings["a"].binding.description == "Apply"
+        # branch-only view keys are simply not in the chain
+        assert "slash" not in bindings and "s" not in bindings and "o" not in bindings
+        assert not bindings["t"].enabled  # already on Stashes
+        assert bindings["b"].enabled
+
+
+async def test_branch_keys_are_inert_on_the_stashes_tab():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        before = dict(app.actions)
+        await to_stashes(app, pilot)
+        await pilot.press("k")  # keep on a stash, not a branch
+        assert app.actions == before
+
+
+async def test_mark_and_cycle_stash():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("d")
+        assert app.stash_actions["stash@{0}"] is StashAction.DROP
+        await pilot.press("p")
+        assert app.stash_actions["stash@{0}"] is StashAction.POP
+        await pilot.press("a")
+        assert app.stash_actions["stash@{0}"] is StashAction.APPLY
+        await pilot.press("k")
+        assert app.stash_actions["stash@{0}"] is StashAction.KEEP
+        await pilot.press("space")
+        assert app.stash_actions["stash@{0}"] is StashAction.DROP
+
+
+async def test_only_one_restore_per_session():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("p")
+        await pilot.press("down")
+        await pilot.press("p")  # refused
+        assert app.stash_actions["stash@{0}"] is StashAction.POP
+        assert app.stash_actions["stash@{1}"] is StashAction.KEEP
+        assert app.is_running
+
+
+async def test_pop_to_apply_on_the_same_row_is_allowed():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("p")
+        await pilot.press("a")
+        assert app.stash_actions["stash@{0}"] is StashAction.APPLY
+
+
+async def test_unmarking_the_restore_frees_the_slot():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("p")
+        await pilot.press("k")  # release it
+        await pilot.press("down")
+        await pilot.press("p")
+        assert app.stash_actions["stash@{1}"] is StashAction.POP
+
+
+async def test_cycle_skips_restores_when_one_is_taken():
+    """Without the skip, space on a second row would dead-end on a refusal."""
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("p")  # stash@{0} holds the restore
+        await pilot.press("down")
+        await pilot.press("space")
+        assert app.stash_actions["stash@{1}"] is StashAction.DROP
+        await pilot.press("space")  # skips pop and apply, back to keep
+        assert app.stash_actions["stash@{1}"] is StashAction.KEEP
+
+
+async def test_drops_are_unlimited():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        for _ in range(3):
+            await pilot.press("d")
+            await pilot.press("down")
+        assert sum(1 for a in app.stash_actions.values() if a is StashAction.DROP) == 3
+
+
+async def test_diff_updates_on_cursor_move():
+    branches, stashes = stash_fixture()
+    app = make_app(branches=branches, stashes=stashes, stash_diff=lambda sha: f"patch-{sha}")
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        assert diff_pane(app).source == "patch-sha0"  # primed on activation
+        await pilot.press("down")
+        await pilot.pause()  # RowHighlighted is a posted message
+        assert diff_pane(app).source == "patch-sha1"
+
+
+async def test_diff_is_fetched_once_per_stash():
+    calls: list[str] = []
+    branches, stashes = stash_fixture()
+    app = make_app(
+        branches=branches,
+        stashes=stashes,
+        stash_diff=lambda sha: calls.append(sha) or f"patch-{sha}",
+    )
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("up")
+        await pilot.pause()
+        assert calls == ["sha0", "sha1"]  # not three: the cache absorbs the revisit
+
+
+async def test_no_diff_is_fetched_until_the_tab_is_opened():
+    """RowHighlighted bubbles from every table, and add_row posts one for row 0
+    while the stash table is built — so neither startup nor branch-table cursor
+    movement may cost a diff fetch."""
+    calls: list[str] = []
+    branches, stashes = stash_fixture()
+    app = make_app(
+        branches=branches,
+        stashes=stashes,
+        stash_diff=lambda sha: calls.append(sha) or "x",
+    )
+    async with app.run_test() as pilot:
+        await pilot.press("down", "down")  # move the branch table's cursor
+        await pilot.pause()
+        assert calls == []
+
+        await to_stashes(app, pilot)
+        assert calls == ["sha0"]  # only once the user actually looks
+
+
+async def test_diff_without_a_callable_is_harmless():
+    app = stash_app()  # stash_diff omitted
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        assert "no diff available" in diff_pane(app).source
+        assert app.is_running
+
+
+async def test_split_stacks_on_a_narrow_terminal():
+    app = stash_app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await to_stashes(app, pilot)
+        split = app.query_one("#stash-split")
+        assert not split.has_class("stacked")
+        assert stash_table(app).size.width < 120  # side by side
+
+        await pilot.resize_terminal(80, 24)
+        await pilot.pause()
+        assert split.has_class("stacked")
+        assert stash_table(app).size.width == 80  # full width, all six columns fit
+        assert diff_pane(app).size.height > 0  # the diff is kept, not hidden
+
+
+async def test_stash_status_counts_and_cross_branch():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        assert "4 stashes" in status_text(app)
+        assert "0 drop" in status_text(app)
+
+        await pilot.press("d")
+        await pilot.press("down")
+        await pilot.press("p")  # stash@{1} was made on abc-2-open, not main
+        status = status_text(app)
+        assert "1 drop" in status
+        assert "pop stash@{1}" in status
+        assert "onto main (made on abc-2-open)" in status
+
+
+async def test_status_shows_marks_from_both_other_tabs():
+    branches, stashes = stash_fixture()
+    app = make_app(branches=branches, worktrees=worktree_fixture()[1], stashes=stashes)
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("d")
+        status = status_text(app)
+        assert "branches marked" in status and "worktrees marked" in status
+
+        await pilot.press("b")
+        await pilot.pause()
+        assert "1 stashes marked" in status_text(app)
+
+
+async def test_dry_run_banner_survives_a_switch_to_stashes():
+    app = stash_app(dry_run=True)
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        assert status_text(app).startswith("DRY RUN — nothing will change")
+
+
+async def test_review_lists_stash_sections():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("d")  # drop stash@{0}
+        await pilot.press("down", "down")
+        await pilot.press("a")  # apply stash@{2}, made on main
+        await pilot.press("enter")
+        assert isinstance(app.screen, ReviewScreen)
+        body = review_text(app)
+        assert "Restore 1 stash:" in body
+        assert "restore, keeping it in the list" in body
+        assert app.screen.query(".stash-warning")
+        assert "Drop 1 stashes:" in body
+        # recoverable, and the panel says how
+        assert "git stash store <sha>" in body
+        assert app.screen.query_one("#confirm", Button).variant == "error"
+
+
+async def test_review_pop_mentions_the_recovery_sha():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("p")
+        await pilot.press("enter")
+        body = review_text(app)
+        assert "restore, then drop" in body
+        assert "git stash store sha0" in body
+
+
+async def test_review_warns_about_a_cross_branch_restore():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("down")  # stash@{1}: made on abc-2-open
+        await pilot.press("p")
+        await pilot.press("enter")
+        body = review_text(app)
+        assert "was made on abc-2-open — restoring onto main" in body
+        assert "no warning of its own" in body
+        assert app.screen.query_one("#confirm", Button).variant == "error"
+
+
+async def test_review_omits_the_warning_for_a_same_branch_restore():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        await pilot.press("p")  # stash@{0}: made on main, which is current
+        await pilot.press("enter")
+        assert "restoring onto" not in review_text(app)
+
+
+async def test_confirm_returns_outcome_with_stashes():
+    app = stash_app()
+    async with app.run_test() as pilot:
+        clear_branch_marks(app)
+        await to_stashes(app, pilot)
+        await pilot.press("d")
+        await pilot.press("enter")
+        await pilot.press("y")
+    outcome = app.return_value
+    assert outcome.branches == []
+    assert [(s.selector, a) for s, a in outcome.stashes] == [("stash@{0}", StashAction.DROP)]
+
+
+async def test_empty_stash_list_is_harmless():
+    """Guards the stashes=() default that a repo without stashes hits."""
+    app = make_app()
+    async with app.run_test() as pilot:
+        await to_stashes(app, pilot)
+        assert stash_table(app).row_count == 0
+        assert app.stash_actions == {}
+        await pilot.press("d")  # no cursor row: must not raise
+        await pilot.press("enter")  # nothing marked on this tab
+        assert app.is_running
+        assert "0 stashes" in status_text(app)
+        assert diff_pane(app).source == ""

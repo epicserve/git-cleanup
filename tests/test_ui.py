@@ -3,13 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from git_cleanup.models import BranchInfo, WorktreeInfo
+from git_cleanup.models import BranchInfo, StashInfo, WorktreeInfo
 from git_cleanup.ui import (
     _sync_text,
     _worktree_state_text,
     format_age,
     format_worktree_path,
+    render_stash_table,
     render_worktree_table,
+    stash_files_label,
     worktree_flags,
 )
 
@@ -108,3 +110,39 @@ def test_render_worktree_table_smoke(capsys):
     out = capsys.readouterr().out
     assert "Worktrees" in out
     assert "missing" in out and "detached" in out
+
+
+def make_stash(**overrides) -> StashInfo:
+    defaults = dict(
+        index=0,
+        selector="stash@{0}",
+        sha="deadbeefcafe",
+        created_at=datetime.now(UTC) - timedelta(days=4),
+        subject="On main: thing",
+        branch="main",
+        message="thing",
+        wip=False,
+        parent_count=2,
+    )
+    defaults.update(overrides)
+    return StashInfo(**defaults)
+
+
+def test_stash_files_label():
+    assert stash_files_label(make_stash(file_count=None)) == "—"
+    assert stash_files_label(make_stash(file_count=0)) == "0"
+    assert stash_files_label(make_stash(file_count=5)) == "5"
+    assert stash_files_label(make_stash(file_count=5, parent_count=3)) == "5 +u"
+
+
+def test_render_stash_table_smoke(capsys):
+    render_stash_table(
+        [
+            make_stash(file_count=2),
+            make_stash(index=1, selector="stash@{1}", wip=True, message="abc1234 wip"),
+            make_stash(index=2, selector="stash@{2}", branch=None, file_count=None),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "Stashes" in out
+    assert "stash@{0}" in out and "detached" in out

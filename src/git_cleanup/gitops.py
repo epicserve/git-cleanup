@@ -1,10 +1,16 @@
 """All git subprocess interactions.
 
 Every read is a constant number of git calls regardless of branch count, with
-one documented exception: `worktree list` does not report cleanliness, so
-`worktree_dirty_count` costs one `git status` per worktree. That is acceptable
-where a per-branch call would not be — branch counts are unbounded, while
-worktrees are hand-made checkouts and number in the single digits.
+two documented exceptions, both one call per item rather than per branch:
+
+- `worktree list` does not report cleanliness, so `worktree_dirty_count` costs
+  one `git status` per worktree.
+- `stash list` does not report size, so `stash_file_count` costs one
+  `git stash show` per stash.
+
+Both are acceptable where a per-branch call would not be — branch counts are
+unbounded, while worktrees are hand-made checkouts and stashes are hand-made
+snapshots, and both number in the single digits for most repos.
 """
 
 from __future__ import annotations
@@ -63,15 +69,32 @@ class RawWorktree:
         return self.branch.removeprefix("refs/heads/")
 
 
+@dataclass(frozen=True)
+class RawStash:
+    index: int  # reflog position — NOT a stable id; see list_stashes
+    selector: str  # raw %gd, e.g. "stash@{0}"
+    sha: str
+    created_at: datetime
+    parents: tuple[str, ...]
+    subject: str  # raw %gs
+
+
+def _run_git_unchecked(
+    args: Sequence[str], cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run git and hand back the result whatever the exit code.
+
+    Only for the handful of commands whose *failure* carries information we
+    need — see restore_stash, where the two failure modes share an exit code
+    but write to different streams.
+    """
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
 def _run_git(args: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run git, raising GitError on a nonzero exit. Use run_git unless you need
     stderr (a few git commands report on it even on success)."""
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
+    result = _run_git_unchecked(args, cwd)
     if result.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result
@@ -339,6 +362,149 @@ def prune_worktrees(*, dry_run: bool = False, cwd: Path | None = None) -> list[s
     result = _run_git(args, cwd)
     # --verbose reports on stderr, not stdout, for both real and dry runs
     return [line for line in result.stderr.splitlines() if line.strip()]
+
+
+# %gs, not %s: %gs is the reflog subject that `git stash list` itself prints, and
+# the two diverge for stashes made with `git stash store`.
+# NEVER add --date=: it rewrites %gd from "stash@{0}" into
+# "stash@{2026-07-31 10:30:14 -0500}", destroying the only usable selector.
+# %cI is immune to it, and parses with the same fromisoformat idiom as list_refs.
+_STASH_FORMAT = "%gd%x1f%H%x1f%cI%x1f%P%x1f%gs"
+_STASH_SELECTOR_RE = re.compile(r"^stash@\{(\d+)\}$")
+
+
+def _parse_stash_records(out: str) -> list[RawStash]:
+    """Parse \\x1f-separated `stash list` output into records.
+
+    Same trap as _parse_worktree_records: -z *terminates* each record rather
+    than separating them, and run_git's .strip() does not eat NUL (it is not
+    Python whitespace), so the split yields a trailing empty element. Reflog
+    subjects are single-line by construction, so accepting the newline form as
+    a fallback costs nothing and needs no second git call.
+    """
+    separator = "\0" if "\0" in out else "\n"
+    stashes: list[RawStash] = []
+    for record in out.split(separator):
+        if not record:
+            continue
+        # maxsplit: a subject cannot contain \x1f in practice, and capping the
+        # split makes mis-splitting on one structurally impossible
+        selector, sha, date, parents, subject = record.split("\x1f", 4)
+        match = _STASH_SELECTOR_RE.match(selector)
+        if match is None:
+            # loud, not lenient: a selector we cannot number is a selector the
+            # executor could point at the wrong stash. Callers degrade a
+            # GitError to "no stashes", which is the safe failure.
+            raise GitError(f"unexpected stash selector {selector!r}")
+        stashes.append(
+            RawStash(
+                index=int(match[1]),
+                selector=selector,
+                sha=sha,
+                created_at=datetime.fromisoformat(date),
+                parents=tuple(parents.split()),
+                subject=subject,
+            )
+        )
+    return stashes
+
+
+def list_stashes(cwd: Path | None = None) -> list[RawStash]:
+    """Every stash, in reflog order (stash@{0} first) — never date order.
+
+    A selector is a reflog *position*, not an id: dropping stash@{1} renumbers
+    everything above it. Callers that mutate must work in descending index
+    order. An empty stash list is exit 0 with zero bytes, not an error.
+    """
+    return _parse_stash_records(
+        run_git("stash", "list", "-z", f"--format={_STASH_FORMAT}", cwd=cwd)
+    )
+
+
+def stash_file_count(ref: str, cwd: Path | None = None) -> int | None:
+    """Number of files a stash touches, or None if git could not look.
+
+    --include-untracked unconditionally: the default `stash show` omits
+    untracked files entirely, and the flag is a no-op on stashes without any.
+    """
+    try:
+        out = run_git("stash", "show", "--include-untracked", "--name-status", ref, cwd=cwd)
+    except GitError:
+        return None
+    return len([line for line in out.splitlines() if line.strip()])
+
+
+def stash_patch(ref: str, cwd: Path | None = None) -> str:
+    """Diffstat plus patch for a stash, for the detail pane.
+
+    `git stash show -p` and not `git show`: the latter renders a stash's merge
+    commit as combined `diff --cc` format, which is unreadable and omits hunks.
+    """
+    return run_git("stash", "show", "--include-untracked", "--stat", "-p", ref, cwd=cwd)
+
+
+def stash_sha(selector: str, cwd: Path | None = None) -> str:
+    """The commit a selector points at *now*.
+
+    Raises GitError (exit 128) once the reflog is shorter than the selector's
+    index — which is how a stale decision is detected before acting on it.
+    """
+    return run_git("rev-parse", "--verify", selector, cwd=cwd)
+
+
+def conflicted_paths(cwd: Path | None = None) -> list[str]:
+    """Paths with unresolved merge conflicts.
+
+    Structural rather than message-sniffing, so it is immune to git's
+    localized output.
+    """
+    out = run_git("diff", "--name-only", "--diff-filter=U", cwd=cwd)
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def drop_stash(selector: str, cwd: Path | None = None) -> None:
+    """Discard a stash without applying it.
+
+    The commit stays reachable until the next gc, so `git stash store <sha>`
+    can undo this.
+    """
+    run_git("stash", "drop", selector, cwd=cwd)
+
+
+@dataclass(frozen=True)
+class RestoreResult:
+    ok: bool
+    conflicted: bool
+    detail: str
+
+
+def restore_stash(selector: str, *, keep: bool, cwd: Path | None = None) -> RestoreResult:
+    """`git stash apply` (keep=True) or `git stash pop` (keep=False).
+
+    Returns instead of raising, because the failure modes share exit code 1 but
+    not their output stream:
+
+    - a dirty tree that would be clobbered: git refuses, and the message is on
+      stderr;
+    - a real merge conflict: git *applies* with conflict markers, prints
+      "CONFLICT" to stdout, and leaves stderr empty.
+
+    A GitError's stderr-only message would therefore be blank for the case that
+    actually changed the working tree. Conflicts are detected structurally, via
+    unmerged index entries, rather than by grepping git's localizable text.
+
+    In every failure mode the stash stays in the list. There is also a third
+    mode (untracked files colliding with existing ones) that exit code alone
+    cannot distinguish, so callers must not claim the tree was left untouched.
+
+    Note that refs/stash is repo-global but a restore writes into the *current*
+    worktree, so running from a linked worktree restores there.
+    """
+    result = _run_git_unchecked(["stash", "apply" if keep else "pop", selector], cwd)
+    if result.returncode == 0:
+        return RestoreResult(ok=True, conflicted=False, detail=result.stdout.strip())
+    detail = result.stderr.strip() or result.stdout.strip()
+    return RestoreResult(ok=False, conflicted=bool(conflicted_paths(cwd)), detail=detail)
 
 
 def delete_local_branch(name: str, *, force: bool = False, cwd: Path | None = None) -> None:

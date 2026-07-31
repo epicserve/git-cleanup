@@ -273,3 +273,124 @@ def test_fetch_prune_removes_gone_remote(repo: Path):
     refs = gitops.list_refs(cwd=repo)
     remote = {r.short_name for r in refs if r.is_remote}
     assert "xyz-7-done-work" not in remote
+
+
+# ---------- stashes ----------
+
+_REC = "stash@{0}\x1faaa\x1f2026-07-31T10:30:14-05:00\x1fp1 p2\x1fOn main: first"
+_REC2 = "stash@{1}\x1fbbb\x1f2026-07-30T10:30:14-05:00\x1fp1 p2 p3\x1fWIP on feat: sha subj"
+
+
+def test_parse_stash_records_nul_terminated():
+    """-z *terminates* records, so the trailing NUL must not yield a phantom."""
+    records = gitops._parse_stash_records(f"{_REC}\0{_REC2}\0")
+    assert len(records) == 2
+    first, second = records
+    assert (first.selector, first.index, first.sha) == ("stash@{0}", 0, "aaa")
+    assert first.created_at.tzinfo is not None
+    assert first.subject == "On main: first"
+    assert len(second.parents) == 3  # the -u shape
+
+
+def test_parse_stash_records_newline_fallback_and_empty():
+    assert len(gitops._parse_stash_records(f"{_REC}\n{_REC2}")) == 2
+    assert gitops._parse_stash_records("") == []
+
+
+def test_parse_stash_records_rejects_a_date_selector():
+    """The structural guard against ever passing --date=, which rewrites %gd
+    into a date and would leave selectors pointing at the wrong stash."""
+    dated = _REC.replace("stash@{0}", "stash@{2026-07-31 10:30:14 -0500}")
+    with pytest.raises(gitops.GitError, match="unexpected stash selector"):
+        gitops._parse_stash_records(dated)
+
+
+def test_list_stashes_shapes(repo_with_stashes: Path):
+    stashes = gitops.list_stashes(cwd=repo_with_stashes)
+    assert [s.selector for s in stashes] == [f"stash@{{{i}}}" for i in range(4)]
+    assert [s.index for s in stashes] == [0, 1, 2, 3]
+    assert stashes[0].subject == "On main: fix: login: retry"
+    assert stashes[1].subject.startswith("WIP on abc-201-new-dashboard: ")
+    assert stashes[3].subject == "On (no branch): detached"
+    # 3 parents only for the -u stash; ^3 is the untracked tree
+    assert [len(s.parents) for s in stashes] == [2, 2, 3, 2]
+
+
+def test_list_stashes_empty_is_not_an_error(repo: Path):
+    assert gitops.list_stashes(cwd=repo) == []
+
+
+def test_stash_patch_includes_untracked_and_is_not_a_combined_diff(repo_with_stashes: Path):
+    patch = gitops.stash_patch("stash@{2}", cwd=repo_with_stashes)
+    assert "extra.txt" in patch  # proves --include-untracked
+    assert "diff --cc" not in patch  # proves we are not on `git show`
+
+
+def test_stash_file_count(repo_with_stashes: Path):
+    assert gitops.stash_file_count("stash@{2}", cwd=repo_with_stashes) == 2  # incl. untracked
+    assert gitops.stash_file_count("stash@{0}", cwd=repo_with_stashes) == 1
+    assert gitops.stash_file_count("stash@{99}", cwd=repo_with_stashes) is None
+
+
+def test_stash_sha_and_bad_selector(repo_with_stashes: Path):
+    stashes = gitops.list_stashes(cwd=repo_with_stashes)
+    assert gitops.stash_sha("stash@{0}", cwd=repo_with_stashes) == stashes[0].sha
+    with pytest.raises(gitops.GitError):
+        gitops.stash_sha("stash@{9}", cwd=repo_with_stashes)
+
+
+def test_dropping_a_stash_shifts_every_higher_index_down(repo_with_stashes: Path):
+    """The hazard the whole execution ordering exists for: a selector is a reflog
+    position, not an id."""
+    before = [s.sha for s in gitops.list_stashes(cwd=repo_with_stashes)]
+
+    gitops.drop_stash("stash@{1}", cwd=repo_with_stashes)
+
+    after = gitops.list_stashes(cwd=repo_with_stashes)
+    assert [s.sha for s in after] == [before[0], before[2], before[3]]
+    assert after[1].sha == before[2]  # old {2} now answers to {1}
+    with pytest.raises(gitops.GitError):
+        gitops.stash_sha("stash@{3}", cwd=repo_with_stashes)  # the top index is gone
+
+
+def test_conflicted_paths_empty_on_a_clean_repo(repo: Path):
+    assert gitops.conflicted_paths(cwd=repo) == []
+
+
+def test_restore_stash_pop_succeeds_and_removes(repo_with_stashes: Path):
+    result = gitops.restore_stash("stash@{0}", keep=False, cwd=repo_with_stashes)
+    assert result.ok and not result.conflicted
+    assert (repo_with_stashes / "base.txt").read_text() == "named edit"
+    assert len(gitops.list_stashes(cwd=repo_with_stashes)) == 3
+
+
+def test_restore_stash_apply_keeps_it_in_the_list(repo_with_stashes: Path):
+    result = gitops.restore_stash("stash@{0}", keep=True, cwd=repo_with_stashes)
+    assert result.ok
+    assert (repo_with_stashes / "base.txt").read_text() == "named edit"
+    assert len(gitops.list_stashes(cwd=repo_with_stashes)) == 4
+
+
+def test_restore_stash_refuses_to_clobber_a_dirty_tree(repo_with_stashes: Path):
+    """git aborts before touching anything, and reports on stderr."""
+    (repo_with_stashes / "base.txt").write_text("local edit I care about")
+    result = gitops.restore_stash("stash@{0}", keep=False, cwd=repo_with_stashes)
+
+    assert not result.ok and not result.conflicted
+    assert result.detail  # git's own message, from stderr
+    assert (repo_with_stashes / "base.txt").read_text() == "local edit I care about"
+    assert len(gitops.list_stashes(cwd=repo_with_stashes)) == 4  # a failed pop keeps it
+
+
+def test_restore_stash_conflict_applies_markers_and_keeps_it(repo_with_stashes: Path):
+    """The other failure mode: git *does* write the tree, prints CONFLICT to
+    stdout, and leaves stderr empty — which is why conflicts are detected via
+    unmerged index entries rather than from GitError's stderr-only message."""
+    (repo_with_stashes / "base.txt").write_text("committed conflicting edit")
+    git("commit", "-am", "conflicting change", cwd=repo_with_stashes)
+
+    result = gitops.restore_stash("stash@{0}", keep=False, cwd=repo_with_stashes)
+    assert not result.ok and result.conflicted
+    assert "<<<<<<<" in (repo_with_stashes / "base.txt").read_text()
+    assert gitops.conflicted_paths(cwd=repo_with_stashes) == ["base.txt"]
+    assert len(gitops.list_stashes(cwd=repo_with_stashes)) == 4

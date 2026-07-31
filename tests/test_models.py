@@ -2,11 +2,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from git_cleanup.models import (
+    RESTORE_ACTIONS,
     Action,
     BranchInfo,
     IssueInfo,
     IssueState,
     Outcome,
+    StashAction,
+    StashInfo,
     WorktreeAction,
     WorktreeInfo,
 )
@@ -125,3 +128,52 @@ def test_outcome_truthiness():
     assert not Outcome()
     assert Outcome(branches=[(make_branch(), Action.DELETE)])
     assert Outcome(worktrees=[(make_worktree(), WorktreeAction.REMOVE)])
+
+
+def make_stash(**overrides) -> StashInfo:
+    defaults = dict(
+        index=0,
+        selector="stash@{0}",
+        sha="deadbeefcafe",
+        created_at=datetime.now(UTC) - timedelta(days=4),
+        subject="On main: thing",
+        branch="main",
+        message="thing",
+        wip=False,
+        parent_count=2,
+    )
+    defaults.update(overrides)
+    return StashInfo(**defaults)
+
+
+def test_stash_name_is_the_selector_not_the_sha():
+    """A sha is not unique (git stash store twice); a reflog position is unique
+    within one scan."""
+    assert make_stash(selector="stash@{3}").name == "stash@{3}"
+
+
+def test_stash_has_untracked_from_parent_count():
+    assert not make_stash(parent_count=2).has_untracked
+    assert make_stash(parent_count=3).has_untracked
+
+
+def test_stash_age_days():
+    assert make_stash(created_at=datetime.now(UTC) - timedelta(days=9, hours=2)).age_days == 9
+
+
+def test_restore_actions_are_the_working_tree_ones():
+    assert RESTORE_ACTIONS == {StashAction.POP, StashAction.APPLY}
+    assert StashAction.DROP not in RESTORE_ACTIONS
+
+
+def test_apply_is_the_longest_stash_action_label():
+    """The stash Action column is sized with len(StashAction.APPLY) up front,
+    because cell updates pass update_width=False."""
+    assert max(len(a.value) for a in StashAction) == len(StashAction.APPLY) == 5
+
+
+def test_outcome_includes_stashes():
+    assert Outcome().stashes == []
+    assert Outcome(stashes=[(make_stash(), StashAction.DROP)])
+    # stashes is appended last, so positional construction still works
+    assert not Outcome([], [])

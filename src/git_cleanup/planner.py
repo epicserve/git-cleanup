@@ -10,8 +10,15 @@ import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from git_cleanup.gitops import RawRef, RawWorktree
-from git_cleanup.models import Action, BranchInfo, IssueInfo, WorktreeAction, WorktreeInfo
+from git_cleanup.gitops import RawRef, RawStash, RawWorktree
+from git_cleanup.models import (
+    Action,
+    BranchInfo,
+    IssueInfo,
+    StashInfo,
+    WorktreeAction,
+    WorktreeInfo,
+)
 
 
 def build_branches(
@@ -305,6 +312,72 @@ def recommend_worktree_actions(
         if (branch.merged or branch.issue_done) and (anyone or branch.is_mine(for_email)):
             recommendations[wt.name] = WorktreeAction.REMOVE
     return recommendations
+
+
+# git writes exactly "On <branch>: <msg>" or "WIP on <branch>: <sha> <subj>"
+# (builtin/stash.c). Branch names can contain neither ':' nor a space, so [^:]+
+# stops at the branch/message boundary while the message keeps every later ': '
+# intact. Case is exact on purpose: re.I would also fire on an arbitrary subject
+# that happens to begin "on ".
+_STASH_SUBJECT_RE = re.compile(r"^(?:(?P<wip>WIP on)|On) (?P<branch>[^:]+): (?P<message>.*)$")
+_DETACHED_SENTINEL = "(no branch)"
+
+
+def parse_stash_subject(subject: str) -> tuple[str | None, str, bool]:
+    """Split a reflog subject into (branch, message, wip).
+
+    Returns (None, subject, False) for anything that is not one of git's four
+    shapes: `git stash store -m X` writes X verbatim with no "On" prefix, and a
+    subject we cannot decompose is better shown whole than silently mangled.
+    "(no branch)" is a detached-HEAD sentinel, not a branch, so it maps to None.
+    """
+    match = _STASH_SUBJECT_RE.match(subject)
+    if match is None:
+        return None, subject, False
+    branch = match["branch"]
+    return (
+        None if branch == _DETACHED_SENTINEL else branch,
+        match["message"],
+        bool(match["wip"]),
+    )
+
+
+def build_stashes(
+    raw_stashes: Sequence[RawStash],
+    *,
+    file_counts: dict[str, int | None] | None = None,
+) -> list[StashInfo]:
+    """Turn raw stash records into StashInfo, preserving reflog order.
+
+    Deliberately never sorts, in contrast to build_branches: reflog order is not
+    date order — stash@{0} can be older than stash@{1} — so any reordering would
+    put the numbers the user reads out of step with the selectors the executor
+    acts on.
+    """
+    counts = file_counts or {}
+    stashes: list[StashInfo] = []
+    for raw in raw_stashes:
+        branch, message, wip = parse_stash_subject(raw.subject)
+        stashes.append(
+            StashInfo(
+                index=raw.index,
+                selector=raw.selector,
+                sha=raw.sha,
+                created_at=raw.created_at,
+                subject=raw.subject,
+                branch=branch,
+                message=message,
+                wip=wip,
+                parent_count=len(raw.parents),
+                file_count=counts.get(raw.selector),
+            )
+        )
+    return stashes
+
+
+# There is deliberately no recommend_stash_actions: stashes are never pre-marked
+# (see the comment where stash_actions is built in tui.py), so it could only ever
+# return an empty dict.
 
 
 def recommend_actions(

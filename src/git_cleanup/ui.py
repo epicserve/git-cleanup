@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from git_cleanup.models import BranchInfo, WorktreeInfo
+from git_cleanup.models import BranchInfo, StashInfo, WorktreeInfo
 
 console = Console()
 
@@ -134,6 +134,32 @@ def render_worktree_table(worktrees: Sequence[WorktreeInfo]) -> None:
             (wt.branch_info.issue_key if wt.branch_info else None) or "—",
             changes,
             state,
+        )
+    console.print(table)
+
+
+def stash_files_label(stash: StashInfo) -> str:
+    """Changed-file count, with +u when the stash also carries untracked files."""
+    if stash.file_count is None:
+        return "—"
+    return f"{stash.file_count} +u" if stash.has_untracked else str(stash.file_count)
+
+
+def render_stash_table(stashes: Sequence[StashInfo]) -> None:
+    table = Table(title="Stashes", header_style="bold")
+    table.add_column("Stash")
+    table.add_column("Message", overflow="fold", ratio=3)
+    table.add_column("Branch", overflow="fold", ratio=1)
+    table.add_column("Age", justify="right")
+    table.add_column("Files", justify="right")
+
+    for stash in stashes:
+        table.add_row(
+            stash.selector,
+            f"[dim]{stash.message}[/dim]" if stash.wip else stash.message,
+            stash.branch or "[dim](detached)[/dim]",
+            format_age(stash.age_days),
+            stash_files_label(stash),
         )
     console.print(table)
 

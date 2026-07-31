@@ -18,7 +18,7 @@ from pathlib import Path
 from git_cleanup import gitops, planner
 from git_cleanup.config import Config
 from git_cleanup.gitops import GitError
-from git_cleanup.models import BranchInfo, WorktreeInfo
+from git_cleanup.models import BranchInfo, StashInfo, WorktreeInfo
 from git_cleanup.trackers import get_tracker
 
 
@@ -30,6 +30,7 @@ class RepoScan:
     user_email: str
     issues_found: int  # how many tracker issues were successfully looked up
     worktrees: list[WorktreeInfo] = field(default_factory=list)
+    stashes: list[StashInfo] = field(default_factory=list)
 
 
 def scan_repo(
@@ -39,11 +40,12 @@ def scan_repo(
     cwd: Path | None = None,
 ) -> RepoScan:
     """Gather every local and remote branch with git + issue-tracker data,
-    plus every worktree.
+    plus every worktree and every stash.
 
     Raises GitError on git failures; tracker failures degrade to git-only
-    data (a warning goes to stderr, the scan still succeeds). A worktree-listing
-    failure degrades the same way, to no worktrees.
+    data (a warning goes to stderr, the scan still succeeds). Worktree- and
+    stash-listing failures degrade the same way, to empty lists — a repo can be
+    perfectly cleanable with an unreadable stash reflog.
     """
     if fetch:
         gitops.fetch_prune(cwd=cwd)
@@ -93,6 +95,18 @@ def scan_repo(
     except GitError as exc:
         print(f"warning: could not list worktrees: {exc}", file=sys.stderr)
 
+    stashes: list[StashInfo] = []
+    try:
+        raw_stashes = gitops.list_stashes(cwd=cwd)
+        # stash_file_count swallows its own GitError into None, so one
+        # unreadable stash costs a dash in a column, not the whole section
+        file_counts = {
+            raw.selector: gitops.stash_file_count(raw.selector, cwd=cwd) for raw in raw_stashes
+        }
+        stashes = planner.build_stashes(raw_stashes, file_counts=file_counts)
+    except GitError as exc:
+        print(f"warning: could not list stashes: {exc}", file=sys.stderr)
+
     return RepoScan(
         branches=branches,
         default_branch=default,
@@ -100,4 +114,5 @@ def scan_repo(
         user_email=user_email,
         issues_found=issues_found,
         worktrees=worktrees,
+        stashes=stashes,
     )
