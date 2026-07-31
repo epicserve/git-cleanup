@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from git_cleanup import gitops
-from tests.conftest import ME, OTHER, git
+from tests.conftest import LOCK_REASON, ME, OTHER, git
 
 
 def test_in_git_repo(repo: Path, tmp_path: Path):
@@ -133,6 +133,138 @@ def test_tag_create_push_exists(repo: Path):
     gitops.push_tag(tag, cwd=repo)
     out = git("ls-remote", "--tags", "origin", tag, cwd=repo)
     assert tag in out
+
+
+def test_parse_worktree_records_nul_form():
+    out = "worktree /a\0HEAD aaa\0branch refs/heads/main\0\0worktree /b\0HEAD bbb\0detached\0\0"
+    first, second = gitops._parse_worktree_records(out, "\0")
+    assert (str(first.path), first.short_branch, first.head) == ("/a", "main", "aaa")
+    assert second.detached and second.branch is None and second.short_branch is None
+
+
+def test_parse_worktree_records_last_record_survives_strip():
+    """run_git ends with .strip(), which eats the newline form's trailing blank
+    line — a parser that only flushes on an empty attribute drops the last
+    worktree. '\\0'.isspace() is False, so the -z form keeps its terminators."""
+    raw = "worktree /a\nHEAD aaa\nbranch refs/heads/main\n\nworktree /b\nHEAD bbb\ndetached\n\n"
+    records = gitops._parse_worktree_records(raw.strip(), "\n")
+    assert [str(w.path) for w in records] == ["/a", "/b"]
+
+    nul = "worktree /a\0HEAD aaa\0branch refs/heads/main\0\0"
+    assert len(gitops._parse_worktree_records(nul, "\0")) == 1  # no phantom record
+
+
+def test_parse_worktree_records_locked_without_reason():
+    out = "worktree /a\0HEAD aaa\0branch refs/heads/x\0locked\0\0"
+    (wt,) = gitops._parse_worktree_records(out, "\0")
+    assert wt.locked and wt.lock_reason == ""
+
+
+def test_parse_worktree_records_bare_and_prunable():
+    out = "worktree /a\0bare\0\0worktree /b\0HEAD bbb\0detached\0prunable gitdir file is broken\0\0"
+    bare, broken = gitops._parse_worktree_records(out, "\0")
+    assert bare.bare and bare.head is None
+    assert broken.prunable and broken.prune_reason == "gitdir file is broken"
+
+
+def test_parse_worktree_records_ignores_unknown_labels():
+    out = "worktree /a\0HEAD aaa\0branch refs/heads/x\0futurething value\0\0"
+    (wt,) = gitops._parse_worktree_records(out, "\0")
+    assert wt.short_branch == "x"
+
+
+def _by_dir(repo: Path) -> dict[str, gitops.RawWorktree]:
+    return {w.path.name: w for w in gitops.list_worktrees(cwd=repo)}
+
+
+def test_list_worktrees_main_first_with_flags(repo_with_worktrees: Path):
+    worktrees = gitops.list_worktrees(cwd=repo_with_worktrees)
+    assert len(worktrees) == 5
+    # git documents the main worktree as listed first
+    assert worktrees[0].path.name == repo_with_worktrees.name
+    assert worktrees[0].short_branch == "main"
+
+    found = {w.path.name: w for w in worktrees}
+    assert found["wt-merged"].short_branch == "abc-123-fix-login"
+    assert found["wt-locked"].locked
+    assert found["wt-gone"].prunable and found["wt-gone"].detached
+
+
+def test_list_worktrees_lock_reason_round_trips_verbatim(repo_with_worktrees: Path):
+    """-z keeps reasons byte-for-byte; without it git C-quotes them per
+    core.quotePath, so this fails if someone drops -z."""
+    assert _by_dir(repo_with_worktrees)["wt-locked"].lock_reason == LOCK_REASON
+    assert '"' in LOCK_REASON and "  " in LOCK_REASON  # the parts that get mangled
+
+
+def test_worktree_dirty_count(repo_with_worktrees: Path):
+    outside = repo_with_worktrees.parent
+    assert gitops.worktree_dirty_count(outside / "wt-merged") == 0
+    assert gitops.worktree_dirty_count(outside / "wt-dirty") == 1
+    # the directory is gone: subprocess's cwd= would raise FileNotFoundError,
+    # which is not a GitError; `git -C` exits 128 instead so this returns None
+    assert gitops.worktree_dirty_count(outside / "wt-gone") is None
+
+
+def test_worktree_dirty_count_counts_tracked_and_untracked(repo_with_worktrees: Path):
+    worktree = repo_with_worktrees.parent / "wt-merged"
+    (worktree / "login.txt").write_text("modified")  # tracked
+    (worktree / "brand-new.txt").write_text("new")  # untracked
+    assert gitops.worktree_dirty_count(worktree) == 2
+
+
+def test_remove_worktree_leaves_the_branch_alive(repo_with_worktrees: Path):
+    worktree = repo_with_worktrees.parent / "wt-merged"
+    gitops.remove_worktree(worktree, cwd=repo_with_worktrees)
+    assert not worktree.exists()
+    assert "wt-merged" not in _by_dir(repo_with_worktrees)
+    assert git("branch", "--list", "abc-123-fix-login", cwd=repo_with_worktrees) != ""
+
+
+def test_remove_worktree_dirty_requires_force(repo_with_worktrees: Path):
+    worktree = repo_with_worktrees.parent / "wt-dirty"
+    with pytest.raises(gitops.GitError):
+        gitops.remove_worktree(worktree, cwd=repo_with_worktrees)
+    gitops.remove_worktree(worktree, force=True, cwd=repo_with_worktrees)
+    assert not worktree.exists()
+
+
+def test_remove_worktree_locked_fails_even_with_force(repo_with_worktrees: Path):
+    """Documents why the executor refuses locked worktrees rather than
+    force-removing them: that would need -f -f, which we never pass."""
+    worktree = repo_with_worktrees.parent / "wt-locked"
+    with pytest.raises(gitops.GitError):
+        gitops.remove_worktree(worktree, force=True, cwd=repo_with_worktrees)
+    assert worktree.exists()
+
+
+def test_remove_worktree_refuses_main(repo_with_worktrees: Path):
+    with pytest.raises(gitops.GitError):
+        gitops.remove_worktree(repo_with_worktrees, force=True, cwd=repo_with_worktrees)
+    assert (repo_with_worktrees / "base.txt").exists()
+
+
+def test_prune_worktrees_dry_run_then_real(repo_with_worktrees: Path):
+    report = gitops.prune_worktrees(dry_run=True, cwd=repo_with_worktrees)
+    assert any("wt-gone" in line for line in report)
+    assert "wt-gone" in _by_dir(repo_with_worktrees)  # dry run changed nothing
+
+    pruned = gitops.prune_worktrees(cwd=repo_with_worktrees)
+    assert any("wt-gone" in line for line in pruned)
+    remaining = _by_dir(repo_with_worktrees)
+    assert "wt-gone" not in remaining
+    assert "wt-locked" in remaining  # prune skips locked worktrees
+
+
+def test_delete_local_branch_blocked_until_worktree_removed(repo_with_worktrees: Path):
+    """The git fact the whole execution ordering rests on: `git branch -d/-D`
+    refuses a branch that is checked out in any worktree."""
+    with pytest.raises(gitops.GitError):
+        gitops.delete_local_branch("abc-123-fix-login", force=True, cwd=repo_with_worktrees)
+
+    gitops.remove_worktree(repo_with_worktrees.parent / "wt-merged", cwd=repo_with_worktrees)
+    gitops.delete_local_branch("abc-123-fix-login", force=True, cwd=repo_with_worktrees)
+    assert git("branch", "--list", "abc-123-fix-login", cwd=repo_with_worktrees) == ""
 
 
 def test_fetch_prune_removes_gone_remote(repo: Path):

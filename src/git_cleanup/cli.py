@@ -11,7 +11,7 @@ from git_cleanup import __version__, gitops, planner, state, tui, ui
 from git_cleanup.config import Config, load_config
 from git_cleanup.core import scan_repo
 from git_cleanup.gitops import GitError
-from git_cleanup.models import Action, BranchInfo
+from git_cleanup.models import Action, BranchInfo, WorktreeAction, WorktreeInfo
 
 
 def _interactive() -> bool:
@@ -125,6 +125,50 @@ def _archive(branch: BranchInfo, *, dry_run: bool) -> bool:
         return False
 
 
+def _remove_worktree(worktree: WorktreeInfo, *, dry_run: bool) -> bool:
+    label = ui.format_worktree_path(worktree.path)
+    force = worktree.needs_force
+    if dry_run:
+        ui.dry_run_note(
+            f"remove worktree {label}" + (" (--force: uncommitted changes)" if force else "")
+        )
+        return True
+    try:
+        gitops.remove_worktree(worktree.path, force=force)
+        ui.info(f"  removed worktree [bold]{label}[/bold]")
+        return True
+    except GitError as exc:
+        ui.warn(f"could not remove worktree {label}: {exc}")
+        return False
+
+
+def _prune_worktrees(marked: int, *, dry_run: bool) -> int:
+    """Clear broken worktree entries in one repo-wide call.
+
+    Reports git's own --verbose list rather than the marked count: prune is
+    repo-wide, so it may clear entries nobody marked.
+    """
+    if dry_run:
+        try:
+            pruned = gitops.prune_worktrees(dry_run=True)
+        except GitError as exc:
+            ui.warn(f"could not prune worktrees: {exc}")
+            return 0
+        ui.dry_run_note(
+            f"run git worktree prune ({marked} marked; "
+            f"clears {len(pruned)} broken worktree entries)"
+        )
+        return len(pruned)
+    try:
+        pruned = gitops.prune_worktrees()
+    except GitError as exc:
+        ui.warn(f"could not prune worktrees: {exc}")
+        return 0
+    for line in pruned:
+        ui.info(f"  pruned [bold]{line}[/bold]")
+    return len(pruned)
+
+
 def _protect(branch: BranchInfo, current: str | None, default: str, config: Config) -> bool:
     """Final safety re-check before any destructive action."""
     return (
@@ -132,6 +176,15 @@ def _protect(branch: BranchInfo, current: str | None, default: str, config: Conf
         or branch.name == default
         or branch.name in config.protected_branches
     )
+
+
+def _protect_worktree(worktree: WorktreeInfo) -> bool:
+    """Final safety re-check before removing a worktree.
+
+    Dirtiness is deliberately not re-checked: the review screen flagged it in
+    red and the user confirmed, so --force is intended here.
+    """
+    return worktree.is_main or worktree.is_current or worktree.locked
 
 
 def run(args: argparse.Namespace) -> int:
@@ -186,6 +239,10 @@ def run(args: argparse.Namespace) -> int:
             branches = planner.filter_branches(branches, filter_terms, scan.user_email)
             ui.info(f"[dim]filter matched {len(branches)} of {total} branches[/dim]")
         ui.render_branch_table(planner.sort_branches(branches, sort_fields))
+        # a repo with no linked worktrees yields exactly one record (the main
+        # one), which is not worth a table of its own
+        if len(scan.worktrees) > 1:
+            ui.render_worktree_table(scan.worktrees)
         ui.warn("stdin is not a terminal; skipping interactive cleanup")
         return 0
 
@@ -199,7 +256,7 @@ def run(args: argparse.Namespace) -> int:
 
     # the TUI gets every branch; it applies filter/sort itself, so filters
     # can be loosened in-session to reveal hidden branches
-    decisions = tui.run_tui(
+    outcome = tui.run_tui(
         scan.branches,
         my_email=scan.user_email,
         include_all=args.all,
@@ -209,14 +266,30 @@ def run(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         on_view_change=persist_view,
         compare_url=compare_url,
+        worktrees=scan.worktrees,
     )
-    if decisions is None:
+    if outcome is None:
         ui.info("Aborted; no changes made.")
         return 0
 
+    # WORKTREES FIRST. `git branch -d/-D` refuses a branch checked out in any
+    # worktree, so a branch marked delete on the Branches tab and its worktree
+    # marked remove on the Worktrees tab only works in this order. _archive
+    # deletes the local branch too, so it needs the same ordering.
+    removed_worktrees = to_prune = 0
+    for worktree, wt_action in outcome.worktrees:
+        if wt_action is not WorktreeAction.REMOVE or _protect_worktree(worktree):
+            continue
+        if worktree.prunable:
+            to_prune += 1  # batched: `worktree remove` can't touch a missing dir
+        elif _remove_worktree(worktree, dry_run=args.dry_run):
+            removed_worktrees += 1
+    if to_prune:
+        removed_worktrees += _prune_worktrees(to_prune, dry_run=args.dry_run)
+
     current, default = scan.current_branch, scan.default_branch
     deleted_local = deleted_remote = archived = 0
-    for branch, action in decisions:
+    for branch, action in outcome.branches:
         if _protect(branch, current, default, config):
             continue
         if action in (Action.DELETE, Action.DELETE_LOCAL):
@@ -231,10 +304,15 @@ def run(args: argparse.Namespace) -> int:
                 archived += 1
 
     prefix = "[cyan]\\[dry-run][/cyan] " if args.dry_run else ""
-    ui.info(
+    summary = (
         f"\n{prefix}Done: deleted {deleted_local} local, "
-        f"{deleted_remote} remote, archived {archived}."
+        f"{deleted_remote} remote, archived {archived}"
     )
+    # appended only when something was removed, so repos without worktrees
+    # produce byte-identical output
+    if removed_worktrees:
+        summary += f", removed {removed_worktrees} worktrees"
+    ui.info(f"{summary}.")
     return 0
 
 

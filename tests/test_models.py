@@ -1,6 +1,15 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from git_cleanup.models import BranchInfo, IssueInfo, IssueState
+from git_cleanup.models import (
+    Action,
+    BranchInfo,
+    IssueInfo,
+    IssueState,
+    Outcome,
+    WorktreeAction,
+    WorktreeInfo,
+)
 
 
 def make_branch(**overrides) -> BranchInfo:
@@ -58,3 +67,61 @@ def test_cleanup_never_for_current_default_protected():
 
 def test_not_eligible_when_unmerged_and_open():
     assert not make_branch(merged=False, issue=make_issue(IssueState.OPEN)).cleanup_eligible
+
+
+def make_worktree(**overrides) -> WorktreeInfo:
+    defaults = dict(path=Path("/home/x/wt/thing"), head="deadbeefcafe", branch="refs/heads/feat")
+    defaults.update(overrides)
+    return WorktreeInfo(**defaults)
+
+
+def test_worktree_name_is_the_path_string():
+    assert make_worktree(path=Path("/a/b")).name == "/a/b"
+
+
+def test_worktree_short_branch():
+    assert make_worktree().short_branch == "feat"
+    assert make_worktree(branch=None).short_branch is None
+
+
+def test_worktree_needs_force_tracks_dirty_count():
+    assert not make_worktree(dirty_count=0).needs_force
+    assert not make_worktree(dirty_count=None).needs_force  # unknown is not "dirty"
+    assert make_worktree(dirty_count=3).needs_force
+    assert make_worktree(dirty_count=3).is_dirty
+
+
+def test_worktree_removable_false_for_main_current_and_locked():
+    assert make_worktree().removable
+    assert not make_worktree(is_main=True).removable
+    assert not make_worktree(is_current=True).removable
+    assert not make_worktree(locked=True).removable
+
+
+def test_worktree_is_missing_tracks_prunable():
+    assert make_worktree(prunable=True).is_missing
+    assert not make_worktree().is_missing
+
+
+def test_worktree_delegates_to_branch_info():
+    branch = make_branch(merged=True, issue=make_issue())
+    worktree = make_worktree(branch_info=branch)
+    assert worktree.merged and worktree.issue_done
+    assert worktree.age_days == branch.age_days
+    assert worktree.is_mine("brent@example.com")
+
+    orphan = make_worktree(branch_info=None)
+    assert orphan.age_days is None
+    assert not orphan.merged and not orphan.issue_done
+    assert not orphan.is_mine("brent@example.com")
+
+
+def test_branch_has_worktree():
+    assert not make_branch().has_worktree
+    assert make_branch(worktree_path=Path("/a/b")).has_worktree
+
+
+def test_outcome_truthiness():
+    assert not Outcome()
+    assert Outcome(branches=[(make_branch(), Action.DELETE)])
+    assert Outcome(worktrees=[(make_worktree(), WorktreeAction.REMOVE)])

@@ -1,12 +1,13 @@
 """Headless Textual tests via app.run_test()/Pilot (no git, no terminal)."""
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from rich.text import Text
-from textual.widgets import DataTable, Static
+from textual.widgets import Button, DataTable, Static, Tabs
 
 from git_cleanup import planner
-from git_cleanup.models import Action, BranchInfo
+from git_cleanup.models import Action, BranchInfo, WorktreeAction, WorktreeInfo
 from git_cleanup.tui import CleanupApp, ReviewScreen, SpecInput
 
 ME = "brent@example.com"
@@ -61,6 +62,7 @@ def make_app(**overrides) -> CleanupApp:
         dry_run=False,
     )
     branches = overrides.pop("branches", None) or default_branches()
+    kwargs["worktrees"] = overrides.pop("worktrees", [])
     kwargs.update(overrides)
     return CleanupApp(branches, **kwargs)
 
@@ -168,7 +170,7 @@ async def test_filter_keeps_hidden_marks():
         spec_input.value = "mine"
         await pilot.press("enter")
 
-        table = app.query_one(DataTable)
+        table = app.query_one("#branch-table", DataTable)
         assert table.row_count == 4  # zz-theirs hidden
         assert app.actions["zz-theirs"] is Action.DELETE  # mark survives
 
@@ -191,7 +193,7 @@ async def test_invalid_spec_leaves_view_unchanged():
         spec_input.value = "age>abc"
         await pilot.press("enter")
         assert app._filter_spec == ""
-        assert app.query_one(DataTable).row_count == 5
+        assert app.query_one("#branch-table", DataTable).row_count == 5
         assert spec_input.display  # stays open for correction
 
 
@@ -204,7 +206,7 @@ async def test_escape_closes_input_without_applying():
         await pilot.press("escape")
         assert not spec_input.display
         assert app._filter_spec == ""
-        assert app.query_one(DataTable).row_count == 5
+        assert app.query_one("#branch-table", DataTable).row_count == 5
 
 
 async def test_enter_review_confirm_returns_decisions():
@@ -213,7 +215,7 @@ async def test_enter_review_confirm_returns_decisions():
         await pilot.press("enter")
         assert isinstance(app.screen, ReviewScreen)
         await pilot.press("y")
-    assert [(b.name, a) for b, a in app.return_value] == [("abc-1-merged", Action.DELETE)]
+    assert [(b.name, a) for b, a in app.return_value.branches] == [("abc-1-merged", Action.DELETE)]
 
 
 def review_text(app: CleanupApp) -> str:
@@ -250,7 +252,9 @@ async def test_review_confirm_returns_delete_local_decision():
         await pilot.press("d")
         await pilot.press("enter")
         await pilot.press("y")
-    assert [(b.name, a) for b, a in app.return_value] == [("abc-1-merged", Action.DELETE_LOCAL)]
+    assert [(b.name, a) for b, a in app.return_value.branches] == [
+        ("abc-1-merged", Action.DELETE_LOCAL)
+    ]
 
 
 async def test_review_cancel_returns_to_table():
@@ -292,11 +296,11 @@ async def test_enter_binding_advertised_in_footer():
 async def test_reset_view_clears_filter_and_sort():
     app = make_app(filter_spec="mine", sort_fields=planner.parse_sort("-age"))
     async with app.run_test() as pilot:
-        assert app.query_one(DataTable).row_count == 4  # zz-theirs hidden
+        assert app.query_one("#branch-table", DataTable).row_count == 4  # zz-theirs hidden
         await pilot.press("r")
         assert app._filter_spec == ""
         assert app._sort_fields == planner.parse_sort("branch")
-        assert app.query_one(DataTable).row_count == 5
+        assert app.query_one("#branch-table", DataTable).row_count == 5
 
 
 async def test_view_change_callback_on_filter_and_sort():
@@ -396,3 +400,366 @@ async def test_no_dry_run_no_banner():
     async with app.run_test():
         assert not app.query_one("#status", Static).has_class("dry-run")
         assert "DRY RUN" not in status_text(app)
+
+
+# ---------- worktrees ----------
+
+
+def make_worktree(path: str, branch: str | None = None, **overrides) -> WorktreeInfo:
+    defaults = dict(
+        path=Path(path),
+        head="deadbeefcafe1234",
+        branch=f"refs/heads/{branch}" if branch else None,
+        dirty_count=0,
+    )
+    defaults.update(overrides)
+    return WorktreeInfo(**defaults)
+
+
+def worktree_fixture() -> tuple[list[BranchInfo], list[WorktreeInfo]]:
+    """Branches plus worktrees covering main / clean-merged / dirty-merged /
+    open / locked / prunable, wired up the way planner.build_worktrees would."""
+    branches = [
+        make_branch("main", merged=True, is_current=True, is_default=True, is_protected=True),
+        make_branch("wt-clean", merged=True),
+        make_branch("wt-dirty", merged=True),
+        make_branch("wt-locked", merged=True),
+        make_branch("wt-open"),
+    ]
+    by_name = {b.name: b for b in branches}
+    worktrees = [
+        make_worktree("/repo", "main", is_main=True, is_current=True, branch_info=by_name["main"]),
+        make_worktree("/wt/clean", "wt-clean", branch_info=by_name["wt-clean"]),
+        make_worktree("/wt/dirty", "wt-dirty", dirty_count=2, branch_info=by_name["wt-dirty"]),
+        make_worktree(
+            "/wt/locked",
+            "wt-locked",
+            locked=True,
+            lock_reason="on a network share",
+            branch_info=by_name["wt-locked"],
+        ),
+        make_worktree("/wt/open", "wt-open", branch_info=by_name["wt-open"]),
+        make_worktree(
+            "/wt/gone",
+            None,
+            detached=True,
+            prunable=True,
+            dirty_count=None,
+            prune_reason="gitdir file points to non-existent location",
+        ),
+    ]
+    # what build_worktrees back-fills
+    for worktree in worktrees:
+        if worktree.branch_info is not None:
+            worktree.branch_info.worktree_path = worktree.path
+    return branches, worktrees
+
+
+def worktree_app(**overrides) -> CleanupApp:
+    branches, worktrees = worktree_fixture()
+    return make_app(branches=branches, worktrees=worktrees, **overrides)
+
+
+def clear_branch_marks(app: CleanupApp) -> None:
+    """Several fixture branches are merged+mine and so come pre-marked DELETE;
+    tests that assert on one branch clear the rest first."""
+    for name in list(app.actions):
+        app.actions[name] = Action.KEEP
+
+
+def clear_worktree_marks(app: CleanupApp) -> None:
+    for name in list(app.worktree_actions):
+        app.worktree_actions[name] = WorktreeAction.KEEP
+
+
+async def to_worktrees(app: CleanupApp, pilot) -> None:
+    """Tab activation is message-driven, so the pause is required."""
+    await pilot.press("w")
+    await pilot.pause()
+
+
+def worktree_table(app: CleanupApp) -> DataTable:
+    return app.query_one("#worktree-table", DataTable)
+
+
+async def test_worktree_premarks():
+    app = worktree_app()
+    async with app.run_test():
+        assert app.worktree_actions == {
+            "/wt/clean": WorktreeAction.REMOVE,  # merged + clean
+            "/wt/dirty": WorktreeAction.KEEP,  # merged but dirty
+            "/wt/open": WorktreeAction.KEEP,
+            "/wt/gone": WorktreeAction.REMOVE,  # directory is already gone
+        }
+        # git cannot remove these, so they are not markable at all
+        assert "/repo" not in app.worktree_actions
+        assert "/wt/locked" not in app.worktree_actions
+
+
+async def test_dirty_worktree_is_never_premarked():
+    """Pre-marking must not set up a --force that discards uncommitted work."""
+    app = worktree_app()
+    async with app.run_test():
+        assert app.worktree_actions["/wt/dirty"] is WorktreeAction.KEEP
+
+
+async def test_w_focuses_worktree_table():
+    """Guards gotcha A: ContentSwitcher drops focus when it hides the old pane,
+    and with no focus every row binding dies and the footer empties."""
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        assert app.focused is worktree_table(app)
+        assert app._active_tab == "tab-worktrees"
+
+        await pilot.press("b")
+        await pilot.pause()
+        assert app.focused is app.query_one("#branch-table", DataTable)
+
+
+async def test_tab_key_does_not_steal_focus():
+    """Guards gotcha B: focus landing on the tab bar would kill row bindings."""
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        await pilot.press("tab")
+        await pilot.pause()
+        assert app.focused is worktree_table(app)
+        assert not app.query_one(Tabs).can_focus
+
+
+async def test_footer_keys_follow_the_active_tab():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        assert app.screen.active_bindings["d"].binding.description == "Delete (again: local)"
+        assert "slash" in app.screen.active_bindings
+
+        await to_worktrees(app, pilot)
+        assert app.screen.active_bindings["d"].binding.description == "Remove"
+        # decision 3 enforces itself: filter/sort are simply not in the chain
+        assert "slash" not in app.screen.active_bindings
+        assert "s" not in app.screen.active_bindings
+        assert "o" not in app.screen.active_bindings
+        assert "a" not in app.screen.active_bindings
+
+
+async def test_active_tabs_own_key_is_disabled():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        assert not app.screen.active_bindings["b"].enabled  # already on Branches
+        assert app.screen.active_bindings["w"].enabled
+
+        await to_worktrees(app, pilot)
+        assert app.screen.active_bindings["b"].enabled
+        assert not app.screen.active_bindings["w"].enabled
+
+
+async def test_branch_keys_are_inert_on_the_worktrees_tab():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        before = dict(app.actions)
+        await to_worktrees(app, pilot)
+        await pilot.press("a")  # archive: a branch key
+        assert app.actions == before
+
+
+async def test_mark_and_toggle_worktree():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        await pilot.press("down", "down", "down", "down")  # /wt/open (row 4)
+        await pilot.press("d")
+        assert app.worktree_actions["/wt/open"] is WorktreeAction.REMOVE
+        await pilot.press("k")
+        assert app.worktree_actions["/wt/open"] is WorktreeAction.KEEP
+        await pilot.press("space")
+        assert app.worktree_actions["/wt/open"] is WorktreeAction.REMOVE
+        await pilot.press("space")
+        assert app.worktree_actions["/wt/open"] is WorktreeAction.KEEP
+
+
+async def test_main_worktree_cannot_be_marked():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        await pilot.press("d")  # row 0 is the main worktree
+        assert "/repo" not in app.worktree_actions
+        assert app.is_running
+
+
+async def test_locked_worktree_cannot_be_marked():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        await pilot.press("down", "down", "down")  # /wt/locked (row 3)
+        assert app._cursor_worktree().path == Path("/wt/locked")
+        await pilot.press("d")
+        assert "/wt/locked" not in app.worktree_actions
+        assert app.is_running
+
+
+async def test_dirty_worktree_can_be_marked_manually():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        await pilot.press("down", "down")  # /wt/dirty (row 2)
+        await pilot.press("d")
+        assert app.worktree_actions["/wt/dirty"] is WorktreeAction.REMOVE
+
+
+async def test_worktree_status_counts():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        status = status_text(app)
+        assert "6 worktrees" in status
+        assert "1 remove" in status  # /wt/clean
+        assert "1 prune" in status  # /wt/gone
+        assert "dirty" not in status  # nothing dirty is marked yet
+
+        await pilot.press("down", "down")  # /wt/dirty
+        await pilot.press("d")
+        assert "1 dirty — will force" in status_text(app)
+
+
+async def test_status_shows_cross_tab_marks():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        # branches tab: worktree marks are pre-set, so the tail shows them
+        assert "2 worktrees marked" in status_text(app)
+
+        await to_worktrees(app, pilot)
+        assert "branches marked" in status_text(app)
+
+
+async def test_dry_run_banner_survives_a_tab_switch():
+    app = worktree_app(dry_run=True)
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        assert status_text(app).startswith("DRY RUN — nothing will change")
+        assert app.query_one("#status", Static).has_class("dry-run")
+
+
+async def test_branches_tab_shows_wt_column():
+    app = worktree_app()
+    async with app.run_test():
+        table = app.query_one("#branch-table", DataTable)
+        labels = [str(col.label) for col in table.columns.values()]
+        assert labels.index("WT") == labels.index("Remote") + 1
+
+
+async def test_enter_from_worktrees_tab_opens_review():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        await pilot.press("enter")
+        assert isinstance(app.screen, ReviewScreen)
+
+
+async def test_review_lists_worktree_sections():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await pilot.press("enter")
+        body = review_text(app)
+        assert "Remove 1 worktrees:" in body
+        # decision 1, made legible right where a user would assume otherwise
+        assert "→ branch wt-clean stays" in body
+        # never tell a user a missing directory is being "removed"
+        assert "Clear 1 broken entries:" in body
+        assert "→ prune (directory is gone)" in body
+
+
+async def test_review_flags_dirty_removals_in_a_red_panel():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        await pilot.press("down", "down")  # /wt/dirty
+        await pilot.press("d")
+        await pilot.press("enter")
+        assert app.screen.query(".worktree-warning")
+        body = review_text(app)
+        assert "uncommitted changes" in body
+        assert "the changes are not recoverable" in body
+        confirm = app.screen.query_one("#confirm", Button)
+        assert confirm.variant == "error"
+
+
+async def test_review_warns_branch_delete_will_fail_without_worktree_removal():
+    branches, worktrees = worktree_fixture()
+    app = make_app(branches=branches, worktrees=worktrees)
+    async with app.run_test() as pilot:
+        clear_worktree_marks(app)  # nothing is being removed
+        clear_branch_marks(app)
+        # wt-dirty's branch is marked delete but its worktree is not being removed
+        app.actions["wt-dirty"] = Action.DELETE
+        await pilot.press("enter")
+        body = review_text(app)
+        assert "✗ checked out in /wt/dirty — delete will fail" in body
+        assert "after removing worktree" not in body
+
+
+async def test_review_note_flips_once_the_worktree_is_marked():
+    branches, worktrees = worktree_fixture()
+    app = make_app(branches=branches, worktrees=worktrees)
+    async with app.run_test() as pilot:
+        clear_branch_marks(app)
+        app.actions["wt-clean"] = Action.DELETE  # its worktree is pre-marked remove
+        await pilot.press("enter")
+        body = review_text(app)
+        assert "→ after removing worktree /wt/clean" in body
+        assert "delete will fail" not in body
+
+
+async def test_review_annotates_the_archive_group_too():
+    """_archive force-deletes the local branch, and git refuses that identically."""
+    branches, worktrees = worktree_fixture()
+    app = make_app(branches=branches, worktrees=worktrees)
+    async with app.run_test() as pilot:
+        clear_worktree_marks(app)
+        clear_branch_marks(app)
+        app.actions["wt-open"] = Action.ARCHIVE
+        await pilot.press("enter")
+        body = review_text(app)
+        assert "Archive 1:" in body
+        assert "✗ checked out in /wt/open — delete will fail" in body
+
+
+async def test_confirm_returns_outcome_with_both_kinds():
+    branches, worktrees = worktree_fixture()
+    app = make_app(branches=branches, worktrees=worktrees)
+    async with app.run_test() as pilot:
+        clear_branch_marks(app)
+        app.actions["wt-open"] = Action.DELETE
+        await pilot.press("enter")
+        await pilot.press("y")
+    outcome = app.return_value
+    assert [(b.name, a) for b, a in outcome.branches] == [("wt-open", Action.DELETE)]
+    assert sorted((str(wt.path), a) for wt, a in outcome.worktrees) == [
+        ("/wt/clean", WorktreeAction.REMOVE),
+        ("/wt/gone", WorktreeAction.REMOVE),
+    ]
+
+
+async def test_worktrees_marked_alone_can_be_confirmed():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        clear_branch_marks(app)
+        await to_worktrees(app, pilot)
+        await pilot.press("enter")
+        assert isinstance(app.screen, ReviewScreen)
+        await pilot.press("y")
+    assert app.return_value.branches == []
+    assert len(app.return_value.worktrees) == 2
+
+
+async def test_empty_worktree_list_is_harmless():
+    """Guards the worktrees=() default that a plain repo hits."""
+    app = make_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        assert worktree_table(app).row_count == 0
+        assert app.worktree_actions == {}
+        await pilot.press("d")  # no cursor row: must not raise
+        await pilot.press("enter")  # nothing marked on this tab
+        assert app.is_running
+        assert "0 worktrees" in status_text(app)

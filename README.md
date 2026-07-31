@@ -4,7 +4,11 @@ Interactively clean up git branches that are merged, done in your issue tracker,
 
 `git-cleanup` fetches and prunes `origin`, gathers every local and remote branch (author,
 age, merged status, ahead/behind counts vs upstream, and linked issue status), then opens
-a full-screen TUI: one table of all branches where each row carries an action you control.
+a full-screen TUI with two tabs. **Branches** is one table of all branches where each row
+carries an action you control. **Worktrees** lists every `git worktree` with its branch,
+its count of uncommitted changes, and whether it is broken or locked.
+
+### Branches
 
 - **delete** — removes the branch locally and on origin (whatever exists). Your branches
   that are merged or whose issue is done come pre-marked.
@@ -16,16 +20,31 @@ a full-screen TUI: one table of all branches where each row carries an action yo
   then deletes the branch. Restore any time with `git checkout -b <branch> archive/<branch>`.
 - **keep** — the default; nothing happens.
 
+### Worktrees
+
+- **remove** — runs `git worktree remove`, with `--force` when the worktree has
+  uncommitted changes. A worktree whose directory is already gone is cleared with
+  `git worktree prune` instead. Worktrees whose branch is merged or issue-done come
+  pre-marked, as do broken entries — but a worktree with uncommitted changes never does.
+- **keep** — the default; nothing happens.
+
+Removing a worktree **never deletes its branch** — do that on the Branches tab. Worktree
+removals run **before** branch deletions, so marking both in one session works: `git
+branch -d` refuses a branch that is checked out anywhere, and the review screen tells you
+which deletions are waiting on which removal.
+
 Press Enter to review everything grouped (with a prominent warning for anything deleted
-on origin), confirm, and it executes. Quit with `q` and nothing changes.
+on origin or removed with `--force`), confirm, and it executes. Quit with `q` and nothing
+changes.
 
 ### Keys
 
 | Key | Action |
 |---|---|
 | ↑/↓, PgUp/PgDn | Move |
-| `space` | Cycle keep → delete → delete-local → archive |
-| `d` | Mark delete; press again to toggle between delete and delete-local |
+| `b` / `w` | Switch to the Branches / Worktrees tab |
+| `space` | Cycle keep → delete → delete-local → archive (Worktrees: toggle keep ⇄ remove) |
+| `d` | Mark delete; press again to toggle between delete and delete-local (Worktrees: mark remove) |
 | `a` / `k` | Mark archive / keep |
 | `o` | Open the branch's compare page on origin (vs the default branch) |
 | `/` | Live filter (same syntax as `--filter`) |
@@ -33,6 +52,9 @@ on origin), confirm, and it executes. Quit with `q` and nothing changes.
 | `r` | Reset filter & sort to defaults |
 | `Enter` | Review and confirm |
 | `q` / `Esc` | Quit without changes |
+
+The footer always shows the keys for the tab you are on. `/`, `s`, `r`, and `o` are
+branch-only — worktree lists are short enough not to need filtering or sorting.
 
 Filter and sort changes are remembered per repository, so your view comes back the next
 time you run `git-cleanup` there. `r` resets (and forgets) them.
@@ -61,14 +83,18 @@ $ uvx git-cleanup --dry-run  # preview everything, change nothing
 | `--dry-run` | Full run with zero mutations — prints `[dry-run] would delete ...` instead |
 | `--no-fetch` | Skip the initial `git fetch --prune origin` |
 | `--all` | Pre-mark other authors' cleanup-eligible branches for deletion too |
-| `--sort COLS` | Sort columns, comma-separated, `-` prefix for descending — e.g. `--sort=-age,status,author`. Columns: `branch`, `local`, `remote`, `sync`, `author`, `age`, `merged`, `issue`, `status` |
-| `--filter TERMS` | Only show branches matching all terms — e.g. `--filter 'mine,age>6m,status!=done'`. A bare word matches any text column (`--filter brent`). Flags: `mine`, `merged`, `local`, `remote`, `gone` (prefix `!` to negate); `age>N`/`age<N`/`age>=N`/`age<=N` in days or with `d`/`m`/`y` suffix; substring matches `branch=X`, `author=X`, `issue=X`, `status=X` (`!=` excludes). Quote specs containing `>` or `!` |
+| `--sort COLS` | Sort columns, comma-separated, `-` prefix for descending — e.g. `--sort=-age,status,author`. Columns: `branch`, `local`, `remote`, `worktree`, `sync`, `author`, `age`, `merged`, `issue`, `status` |
+| `--filter TERMS` | Only show branches matching all terms — e.g. `--filter 'mine,age>6m,status!=done'`. A bare word matches any text column (`--filter brent`). Flags: `mine`, `merged`, `local`, `remote`, `gone`, `worktree` (prefix `!` to negate); `age>N`/`age<N`/`age>=N`/`age<=N` in days or with `d`/`m`/`y` suffix; substring matches `branch=X`, `author=X`, `issue=X`, `status=X` (`!=` excludes). Quote specs containing `>` or `!` |
+| `--config PATH` | Use an alternate config file |
+| `--version` | Print the version |
 
 Interactive runs default to your last-used filter and sort in that repository; an
 explicit `--sort`/`--filter` wins for that session without overwriting the saved view.
 Non-interactive runs (pipes, CI) use only explicit flags.
-| `--config PATH` | Use an alternate config file |
-| `--version` | Print the version |
+
+`worktree` is a boolean filter flag, so the bare word `worktree` now means "has a
+worktree" rather than a substring search across the text columns, and `!worktree` means
+"has no worktree". To search for the literal string, use `branch=worktree`.
 
 Branches are matched to issues by extracting an issue key (e.g. `ABC-123`) from the
 branch name, case-insensitively. Branches without a key just show no issue info.
@@ -83,9 +109,23 @@ branch name, case-insensitively. Branches without a key just show no issue info.
   screen, and local deletions that would lose unpushed commits are flagged.
 - `delete-local` rows never appear in that warning (nothing leaves origin); they are
   listed with the `origin/<branch>` they are keeping.
-- Non-interactive runs (pipes, CI) never mutate anything — they print the table and exit.
+- Non-interactive runs (pipes, CI) never mutate anything — they print the tables and exit.
 - If Jira is unreachable or unconfigured, the tool degrades to git-only info
   (merged status still works).
+
+For worktrees specifically:
+
+- The main worktree, the worktree you are currently in, and locked worktrees can never
+  be marked — git cannot remove them, and the tab says so when you try.
+- A worktree with uncommitted changes *can* be marked by hand, but it is never pre-marked,
+  it is flagged in its own red-bordered panel on the review screen, and removing it passes
+  `--force`, which discards that work irrecoverably.
+- `git worktree prune` is repo-wide, so clearing one broken entry clears them all. The
+  dry-run note and the summary report git's own list rather than the count you marked.
+- Worktree removals execute before any branch deletion, and removing a worktree never
+  deletes its branch.
+- If listing worktrees fails for an unrelated reason, the run degrades to branches-only
+  with a warning on stderr.
 
 ## Configuration
 
@@ -121,6 +161,15 @@ provider = "none"
 
 Environment variables `JIRA_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` override the
 config file, including repo overrides.
+
+The Worktrees tab adds no configuration of its own: `archive_age_days` also drives the
+stale highlight on its Age column, and since that is already per-repo overridable, a
+monorepo with long-lived worktrees just raises it. Note that `protected_branches` does
+*not* prevent removing a worktree — removing a checkout never touches a ref — but a
+protected branch's worktree is never pre-marked, only manually markable.
+
+Worktree listing uses `git worktree list --porcelain -z` (git 2.36+), falling back to the
+newline form on older git.
 
 Filter/sort views chosen in the TUI are saved per repository in
 `$XDG_STATE_HOME/git-cleanup/state.json` (default `~/.local/state/git-cleanup/state.json`).

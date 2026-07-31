@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
-from git_cleanup.models import BranchInfo
+from git_cleanup.models import BranchInfo, WorktreeInfo
 
 console = Console()
 
 
 def render_branch_table(branches: Sequence[BranchInfo]) -> None:
     table = Table(title="Branches", header_style="bold")
-    table.add_column("Branch", overflow="fold")
+    # ratio splits the slack: with 10 columns at 80 cols something has to fold,
+    # and the branch name is the row's identity, so let the author fold first
+    table.add_column("Branch", overflow="fold", ratio=3)
     table.add_column("Local", justify="center")
     table.add_column("Remote", justify="center")
+    table.add_column("WT", justify="center")
     table.add_column("Sync", justify="center")
-    table.add_column("Author")
+    table.add_column("Author", overflow="fold", ratio=1)
     table.add_column("Age", justify="right")
     table.add_column("Merged", justify="center")
     table.add_column("Issue")
@@ -36,12 +40,100 @@ def render_branch_table(branches: Sequence[BranchInfo]) -> None:
             name,
             "●" if b.has_local else "",
             "●" if b.has_remote else "",
+            "●" if b.has_worktree else "",
             _sync_label(b),
             b.author_name,
             format_age(b.age_days),
             "[green]✓[/green]" if b.merged else "",
             b.issue_key or "—",
             f"[{status_style}]{status}[/{status_style}]" if status_style else status,
+        )
+    console.print(table)
+
+
+def format_worktree_path(path: Path) -> str:
+    """Worktree path with $HOME collapsed to '~'."""
+    home = Path.home()
+    if path == home:
+        return "~"
+    try:
+        return f"~/{path.relative_to(home)}"
+    except ValueError:
+        return str(path)
+
+
+def _worktree_state_text(wt: WorktreeInfo) -> str:
+    """The single most important thing about a worktree, as plain text.
+
+    Precedence: a missing directory outranks a lock (the lock is moot once the
+    checkout is gone), which outranks the structural bare/main/detached facts.
+    """
+    if wt.is_missing:
+        return "missing"
+    if wt.locked:
+        return "locked"
+    if wt.bare:
+        return "bare"
+    if wt.is_main:
+        return "main"
+    if wt.detached:
+        return "detached"
+    return ""
+
+
+def worktree_flags(wt: WorktreeInfo) -> list[str]:
+    """Every notable state of a worktree, as words.
+
+    Unlike _worktree_state_text these are orthogonal and all shown: five states
+    with no established icon vocabulary, so words beat invented glyphs.
+    """
+    flags = []
+    if wt.is_main:
+        flags.append("main")
+    if wt.is_missing:
+        flags.append("missing")
+    if wt.locked:
+        flags.append("locked")
+    if wt.is_dirty:
+        flags.append(f"dirty {wt.dirty_count}")
+    if wt.detached:
+        flags.append("detached")
+    if wt.bare:
+        flags.append("bare")
+    return flags
+
+
+def render_worktree_table(worktrees: Sequence[WorktreeInfo]) -> None:
+    table = Table(title="Worktrees", header_style="bold")
+    table.add_column("Worktree", overflow="fold")
+    table.add_column("Branch", overflow="fold")
+    table.add_column("Age", justify="right")
+    table.add_column("Merged", justify="center")
+    table.add_column("Issue")
+    table.add_column("Changes", justify="right")
+    table.add_column("State")
+
+    for wt in worktrees:
+        path = format_worktree_path(wt.path)
+        if wt.is_current:
+            path = f"[bold green]{path}*[/bold green]"
+        elif not wt.removable:
+            path = f"[dim]{path}[/dim]"
+        if wt.dirty_count is None:
+            changes = "—"
+        else:
+            changes = f"[red]{wt.dirty_count}[/red]" if wt.dirty_count else "0"
+        state = _worktree_state_text(wt)
+        if state in ("missing", "locked"):
+            state = f"[yellow]{state}[/yellow]"
+        table.add_row(
+            path,
+            wt.short_branch or ("(bare)" if wt.bare else "(detached)"),
+            format_age(wt.age_days) if wt.age_days is not None else "—",
+            "[green]✓[/green]" if wt.merged else "",
+            (wt.branch_info.issue_key if wt.branch_info else None) or "—",
+            changes,
+            state,
         )
     console.print(table)
 

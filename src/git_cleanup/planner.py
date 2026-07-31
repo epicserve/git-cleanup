@@ -5,11 +5,13 @@ No I/O here — everything is unit-testable with plain data.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 
-from git_cleanup.gitops import RawRef
-from git_cleanup.models import Action, BranchInfo, IssueInfo
+from git_cleanup.gitops import RawRef, RawWorktree
+from git_cleanup.models import Action, BranchInfo, IssueInfo, WorktreeAction, WorktreeInfo
 
 
 def build_branches(
@@ -81,6 +83,7 @@ _SORT_KEYS = {
     "branch": lambda b: b.name.lower(),
     "local": lambda b: b.has_local,
     "remote": lambda b: b.has_remote,
+    "worktree": lambda b: b.has_worktree,
     "sync": lambda b: (b.ahead or 0, b.behind or 0),
     "author": lambda b: b.author_name.lower(),
     "age": lambda b: b.age_days,
@@ -127,7 +130,7 @@ def sort_branches(
     return result
 
 
-_BOOL_COLUMNS = ("mine", "merged", "local", "remote", "gone")
+_BOOL_COLUMNS = ("mine", "merged", "local", "remote", "gone", "worktree")
 _TEXT_COLUMNS = ("branch", "author", "issue", "status")
 _AGE_TERM_RE = re.compile(r"^age(>=|<=|>|<)(\d+)([dmy]?)$")
 _AGE_UNIT_DAYS = {"": 1, "d": 1, "m": 30, "y": 365}
@@ -139,7 +142,7 @@ def parse_filter(spec: str) -> list[FilterTerm]:
     """Parse a filter spec like 'mine,!merged,age>90,author=sam' into AND terms.
 
     Term forms:
-      mine / merged / local / remote / gone   (prefix ! to negate)
+      mine / merged / local / remote / gone / worktree   (prefix ! to negate)
       age>N, age<N, age>=N, age<=N            (N in days, or with d/m/y suffix)
       branch=X, author=X, issue=X, status=X   (case-insensitive substring; != excludes)
       anything else                           (substring match across all text columns)
@@ -188,6 +191,7 @@ def _matches(b: BranchInfo, term: FilterTerm, my_email: str) -> bool:
                 "local": b.has_local,
                 "remote": b.has_remote,
                 "gone": b.upstream_gone,
+                "worktree": b.has_worktree,
             }[name]
             return value == want
         case ("age", op, days):
@@ -216,6 +220,91 @@ def filter_branches(
     my_email: str,
 ) -> list[BranchInfo]:
     return [b for b in branches if all(_matches(b, t, my_email) for t in terms)]
+
+
+def build_worktrees(
+    raw_worktrees: Sequence[RawWorktree],
+    branches: Iterable[BranchInfo],
+    *,
+    current_path: Path | None = None,
+    dirty_counts: dict[Path, int | None] | None = None,
+) -> list[WorktreeInfo]:
+    """Join raw worktree records to BranchInfo by short branch name.
+
+    Also back-fills BranchInfo.worktree_path so the Branches tab can show a WT
+    indicator. First record wins: a branch is checked out at most once, but a
+    broken entry can still name a branch that a live worktree also holds.
+
+    Path comparison is lexical normpath only — the planner does no filesystem
+    I/O, and both sides come from git already absolute.
+    """
+    by_branch = {b.name: b for b in branches}
+    counts = dirty_counts or {}
+    normalized_current = os.path.normpath(current_path) if current_path is not None else None
+
+    worktrees: list[WorktreeInfo] = []
+    for index, raw in enumerate(raw_worktrees):
+        branch_info = by_branch.get(raw.short_branch) if raw.short_branch else None
+        if branch_info is not None and branch_info.worktree_path is None:
+            branch_info.worktree_path = raw.path
+        worktrees.append(
+            WorktreeInfo(
+                path=raw.path,
+                head=raw.head,
+                branch=raw.branch,
+                bare=raw.bare,
+                detached=raw.detached,
+                locked=raw.locked,
+                lock_reason=raw.lock_reason,
+                prunable=raw.prunable,
+                prune_reason=raw.prune_reason,
+                is_main=index == 0,  # git documents the main worktree as first
+                is_current=(
+                    normalized_current is not None
+                    and os.path.normpath(raw.path) == normalized_current
+                ),
+                dirty_count=counts.get(raw.path),
+                branch_info=branch_info,
+            )
+        )
+    return worktrees
+
+
+def recommend_worktree_actions(
+    worktrees: Iterable[WorktreeInfo],
+    *,
+    for_email: str | None = None,
+    include_all: bool = False,
+) -> dict[str, WorktreeAction]:
+    """Recommend REMOVE per worktree name (its path).
+
+    Broken entries are recommended unconditionally: the directory is already
+    gone, nothing is at risk, and the authorship of a vanished checkout is
+    meaningless. Otherwise a worktree is recommended when its branch is merged
+    or issue-done, under the same authorship gate as recommend_actions.
+
+    Never recommends a dirty worktree — pre-marking must not set up a --force
+    that discards uncommitted work. Never recommends one git cannot remove
+    (main, current, locked), nor one whose branch is current, default, or
+    protected: a `develop` worktree stays manually markable but is never
+    pre-marked.
+    """
+    recommendations: dict[str, WorktreeAction] = {}
+    for wt in worktrees:
+        if not wt.removable:
+            continue
+        if wt.prunable:
+            recommendations[wt.name] = WorktreeAction.REMOVE
+            continue
+        if wt.is_dirty:
+            continue
+        branch = wt.branch_info
+        if branch is None or branch.is_current or branch.is_default or branch.is_protected:
+            continue
+        anyone = include_all or for_email is None
+        if (branch.merged or branch.issue_done) and (anyone or branch.is_mine(for_email)):
+            recommendations[wt.name] = WorktreeAction.REMOVE
+    return recommendations
 
 
 def recommend_actions(

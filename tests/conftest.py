@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from git_cleanup.gitops import RawWorktree
 
 ME = "brent@example.com"
 OTHER = "sarah@example.com"
@@ -114,3 +117,47 @@ def repo(tmp_path: Path) -> Path:
     git("remote", "set-head", "origin", "main", cwd=clone)
     git("fetch", "--prune", "origin", cwd=clone)
     return clone
+
+
+LOCK_REASON = 'on a  "network" share'
+
+
+@pytest.fixture
+def repo_with_worktrees(repo: Path) -> Path:
+    """`repo` plus four linked worktrees covering every state.
+
+      wt-merged  abc-123-fix-login      merged, clean      -> pre-marked
+      wt-dirty   abc-201-new-dashboard  unmerged, 1 untracked file
+      wt-locked  xyz-7-done-work        locked
+      wt-gone    detached at main       directory deleted  -> prunable
+
+    The worktrees live *outside* the repo directory: a nested worktree shows up
+    as untracked in the main worktree and would be swallowed by commit()'s
+    `git add .`. None of the three branches is checked out by `repo` itself, so
+    none hits "already checked out".
+    """
+    outside = repo.parent
+
+    git("worktree", "add", str(outside / "wt-merged"), "abc-123-fix-login", cwd=repo)
+
+    git("worktree", "add", str(outside / "wt-dirty"), "abc-201-new-dashboard", cwd=repo)
+    (outside / "wt-dirty" / "scratch.txt").write_text("uncommitted work")
+
+    git("worktree", "add", str(outside / "wt-locked"), "xyz-7-done-work", cwd=repo)
+    git("worktree", "lock", "--reason", LOCK_REASON, str(outside / "wt-locked"), cwd=repo)
+
+    # --detach because main is already checked out in `repo` itself
+    git("worktree", "add", "--detach", str(outside / "wt-gone"), "main", cwd=repo)
+    shutil.rmtree(outside / "wt-gone")
+
+    return repo
+
+
+def raw_worktree(path: str, branch: str | None = None, **flags) -> RawWorktree:
+    """Convenience builder for the pure (no-git) parser and planner tests."""
+    return RawWorktree(
+        path=Path(path),
+        head=flags.pop("head", "0" * 40),
+        branch=f"refs/heads/{branch}" if branch else None,
+        **flags,
+    )

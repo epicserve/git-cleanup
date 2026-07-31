@@ -1,10 +1,12 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from git_cleanup import planner
 from git_cleanup.gitops import RawRef
-from git_cleanup.models import Action, IssueInfo, IssueState
+from git_cleanup.models import Action, BranchInfo, IssueInfo, IssueState, WorktreeAction
+from tests.conftest import raw_worktree
 
 ME = "brent@example.com"
 OTHER = "sarah@example.com"
@@ -225,3 +227,208 @@ def test_extract_and_attach_issues():
     planner.attach_issues(branches, {"ABC-1": issue})
     merged_branch = next(b for b in branches if b.name == "abc-1-merged")
     assert merged_branch.issue is issue
+
+
+# ---------- worktrees ----------
+
+
+def branch_for(name: str, **overrides) -> BranchInfo:
+    defaults = dict(
+        name=name,
+        has_local=True,
+        has_remote=True,
+        sha=f"sha-{name}",
+        author_name="X",
+        author_email=ME,
+        committed_at=NOW - timedelta(days=5),
+        merged=False,
+    )
+    defaults.update(overrides)
+    return BranchInfo(**defaults)
+
+
+def test_build_worktrees_joins_and_back_fills():
+    branches = [branch_for("feat"), branch_for("other")]
+    worktrees = planner.build_worktrees(
+        [raw_worktree("/repo", "main"), raw_worktree("/wt/feat", "feat")],
+        branches,
+    )
+    assert worktrees[0].is_main and not worktrees[1].is_main  # index 0 is main
+    assert worktrees[1].branch_info is branches[0]
+    # back-filled so the Branches tab can show a WT indicator
+    assert branches[0].worktree_path == Path("/wt/feat")
+    assert branches[0].has_worktree
+    assert not branches[1].has_worktree
+
+
+def test_build_worktrees_is_current_normalizes_path():
+    """Lexical normpath only — the planner does no filesystem I/O."""
+    worktrees = planner.build_worktrees(
+        [raw_worktree("/repo", "main"), raw_worktree("/a/b/wt", "feat")],
+        [],
+        current_path=Path("/a/b/../b/wt"),
+    )
+    assert not worktrees[0].is_current
+    assert worktrees[1].is_current
+    assert not worktrees[1].removable  # you cannot remove the one you are in
+
+
+def test_build_worktrees_detached_and_bare_have_no_branch():
+    detached, bare = planner.build_worktrees(
+        [raw_worktree("/wt/det", None, detached=True), raw_worktree("/bare", None, bare=True)],
+        [branch_for("feat")],
+    )
+    assert detached.branch_info is None and detached.age_days is None
+    assert not detached.merged and not detached.issue_done
+    assert not detached.is_mine(ME)
+    assert bare.branch_info is None
+
+
+def test_build_worktrees_dirty_counts_mapping():
+    worktrees = planner.build_worktrees(
+        [raw_worktree("/repo", "main"), raw_worktree("/wt/a", "feat")],
+        [],
+        dirty_counts={Path("/wt/a"): 3},
+    )
+    assert worktrees[1].dirty_count == 3 and worktrees[1].is_dirty
+    # a path absent from the mapping (e.g. a bare worktree) reads as unknown
+    assert worktrees[0].dirty_count is None and not worktrees[0].is_dirty
+
+
+def test_build_worktrees_duplicate_branch_first_wins():
+    """A broken entry can still name a branch a live worktree also holds."""
+    branch = branch_for("feat")
+    planner.build_worktrees(
+        [
+            raw_worktree("/repo", "main"),
+            raw_worktree("/wt/live", "feat"),
+            raw_worktree("/wt/broken", "feat", prunable=True),
+        ],
+        [branch],
+    )
+    assert branch.worktree_path == Path("/wt/live")
+
+
+def recommend(worktrees, **kwargs):
+    return planner.recommend_worktree_actions(worktrees, **kwargs)
+
+
+def wt_infos(raws, branches, **kwargs):
+    return planner.build_worktrees(raws, branches, **kwargs)
+
+
+def test_recommend_worktree_merged_clean_is_marked():
+    branch = branch_for("feat", merged=True)
+    worktrees = wt_infos([raw_worktree("/repo", "main"), raw_worktree("/wt/a", "feat")], [branch])
+    assert recommend(worktrees, for_email=ME) == {"/wt/a": WorktreeAction.REMOVE}
+
+
+def test_recommend_worktree_never_premarks_dirty():
+    """Pre-marking must not set up a --force that discards uncommitted work."""
+    branch = branch_for("feat", merged=True)
+    worktrees = wt_infos(
+        [raw_worktree("/repo", "main"), raw_worktree("/wt/a", "feat")],
+        [branch],
+        dirty_counts={Path("/wt/a"): 1},
+    )
+    assert recommend(worktrees, for_email=ME) == {}
+
+
+def test_recommend_worktree_issue_done_is_marked():
+    done = IssueInfo("ABC-1", "x", "Done", IssueState.DONE, "u")
+    branch = branch_for("feat", issue=done)
+    worktrees = wt_infos([raw_worktree("/repo", "main"), raw_worktree("/wt/a", "feat")], [branch])
+    assert recommend(worktrees, for_email=ME) == {"/wt/a": WorktreeAction.REMOVE}
+
+
+def test_recommend_worktree_prunable_ignores_authorship():
+    """The directory is already gone: nothing is at risk and the authorship of a
+    vanished checkout is meaningless."""
+    branch = branch_for("theirs", author_email=OTHER)
+    worktrees = wt_infos(
+        [raw_worktree("/repo", "main"), raw_worktree("/wt/gone", "theirs", prunable=True)],
+        [branch],
+    )
+    assert recommend(worktrees, for_email=ME, include_all=False) == {
+        "/wt/gone": WorktreeAction.REMOVE
+    }
+
+
+def test_recommend_worktree_authorship_gate():
+    branch = branch_for("theirs", merged=True, author_email=OTHER)
+    worktrees = wt_infos(
+        [raw_worktree("/repo", "main"), raw_worktree("/wt/a", "theirs")], [branch]
+    )
+    assert recommend(worktrees, for_email=ME) == {}
+    assert recommend(worktrees, for_email=ME, include_all=True) == {
+        "/wt/a": WorktreeAction.REMOVE
+    }
+
+
+def test_recommend_worktree_skips_unremovable():
+    branch = branch_for("feat", merged=True)
+    main_wt, locked, current = wt_infos(
+        [
+            raw_worktree("/repo", "main"),
+            raw_worktree("/wt/locked", "feat", locked=True),
+            raw_worktree("/wt/here", "feat"),
+        ],
+        [branch, branch_for("main", merged=True)],
+        current_path=Path("/wt/here"),
+    )
+    assert recommend([main_wt, locked, current], for_email=ME) == {}
+
+
+def test_recommend_worktree_skips_protected_default_and_current_branches():
+    protected = branch_for("develop", merged=True, is_protected=True)
+    default = branch_for("main", merged=True, is_default=True)
+    checked_out = branch_for("wip", merged=True, is_current=True)
+    worktrees = wt_infos(
+        [
+            raw_worktree("/repo", "trunk"),
+            raw_worktree("/wt/develop", "develop"),
+            raw_worktree("/wt/main", "main"),
+            raw_worktree("/wt/wip", "wip"),
+        ],
+        [protected, default, checked_out],
+    )
+    assert recommend(worktrees, for_email=ME) == {}
+
+
+def test_recommend_worktree_prunable_wins_over_protected_branch():
+    """A vanished checkout of a protected branch is still just bookkeeping."""
+    protected = branch_for("develop", is_protected=True)
+    worktrees = wt_infos(
+        [raw_worktree("/repo", "main"), raw_worktree("/wt/gone", "develop", prunable=True)],
+        [protected],
+    )
+    assert recommend(worktrees, for_email=ME) == {"/wt/gone": WorktreeAction.REMOVE}
+
+
+def test_worktree_filter_and_sort_terms():
+    assert planner.parse_filter("worktree") == [("bool", "worktree", True)]
+    assert planner.parse_filter("!worktree") == [("bool", "worktree", False)]
+    with pytest.raises(ValueError):
+        planner.parse_filter("worktree=x")  # not a text column
+    assert planner.parse_sort("worktree") == [("worktree", False)]
+    assert "worktree" in planner.SORT_COLUMNS
+
+
+def test_worktree_filter_selects_branches():
+    with_wt = branch_for("has-wt", worktree_path=Path("/wt/a"))
+    without = branch_for("no-wt")
+    branches = [with_wt, without]
+
+    def names(spec):
+        return [b.name for b in planner.filter_branches(branches, planner.parse_filter(spec), ME)]
+
+    assert names("worktree") == ["has-wt"]
+    assert names("!worktree") == ["no-wt"]
+    # escape hatch for the old bare-word substring behavior
+    assert names("branch=worktree") == []
+
+
+def test_worktree_sort_orders_by_presence():
+    branches = [branch_for("a"), branch_for("b", worktree_path=Path("/wt/b"))]
+    result = planner.sort_branches(branches, planner.parse_sort("-worktree"))
+    assert [b.name for b in result] == ["b", "a"]

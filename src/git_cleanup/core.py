@@ -11,12 +11,14 @@ reports which branches each engineer should delete or archive):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from git_cleanup import gitops, planner
 from git_cleanup.config import Config
-from git_cleanup.models import BranchInfo
+from git_cleanup.gitops import GitError
+from git_cleanup.models import BranchInfo, WorktreeInfo
 from git_cleanup.trackers import get_tracker
 
 
@@ -27,6 +29,7 @@ class RepoScan:
     current_branch: str | None
     user_email: str
     issues_found: int  # how many tracker issues were successfully looked up
+    worktrees: list[WorktreeInfo] = field(default_factory=list)
 
 
 def scan_repo(
@@ -35,10 +38,12 @@ def scan_repo(
     fetch: bool = True,
     cwd: Path | None = None,
 ) -> RepoScan:
-    """Gather every local and remote branch with git + issue-tracker data.
+    """Gather every local and remote branch with git + issue-tracker data,
+    plus every worktree.
 
     Raises GitError on git failures; tracker failures degrade to git-only
-    data (a warning goes to stderr, the scan still succeeds).
+    data (a warning goes to stderr, the scan still succeeds). A worktree-listing
+    failure degrades the same way, to no worktrees.
     """
     if fetch:
         gitops.fetch_prune(cwd=cwd)
@@ -66,10 +71,33 @@ def scan_repo(
             planner.attach_issues(branches, issues)
             issues_found = len(issues)
 
+    # after the tracker lookup: the join stores a reference to each BranchInfo,
+    # and extract_keys/attach_issues mutate those same objects in place, so
+    # WorktreeInfo.issue_done would see issue data either way — but building
+    # worktrees last removes the aliasing question and survives a future
+    # attach_issues that replaces objects instead of mutating them
+    worktrees: list[WorktreeInfo] = []
+    try:
+        raw_worktrees = gitops.list_worktrees(cwd=cwd)
+        dirty_counts = {
+            raw.path: gitops.worktree_dirty_count(raw.path)
+            for raw in raw_worktrees
+            if not raw.bare
+        }
+        worktrees = planner.build_worktrees(
+            raw_worktrees,
+            branches,
+            current_path=gitops.repo_root(cwd=cwd),
+            dirty_counts=dirty_counts,
+        )
+    except GitError as exc:
+        print(f"warning: could not list worktrees: {exc}", file=sys.stderr)
+
     return RepoScan(
         branches=branches,
         default_branch=default,
         current_branch=current,
         user_email=user_email,
         issues_found=issues_found,
+        worktrees=worktrees,
     )

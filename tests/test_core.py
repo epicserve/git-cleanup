@@ -1,7 +1,10 @@
 from pathlib import Path
 
+from git_cleanup import gitops
 from git_cleanup.config import Config
 from git_cleanup.core import scan_repo
+from git_cleanup.gitops import GitError
+from git_cleanup.models import IssueInfo, IssueState
 from tests.conftest import ME, git
 
 
@@ -42,3 +45,55 @@ def test_scan_repo_no_fetch_skips_prune(repo: Path, monkeypatch):
 def test_scan_repo_explicit_cwd(repo: Path):
     scan = scan_repo(make_config(), fetch=False, cwd=repo)
     assert scan.default_branch == "main"
+
+
+def test_scan_repo_worktrees(repo_with_worktrees: Path, capsys):
+    scan = scan_repo(make_config(), cwd=repo_with_worktrees)
+
+    assert len(scan.worktrees) == 5
+    assert scan.worktrees[0].is_main and scan.worktrees[0].is_current
+    found = {wt.path.name: wt for wt in scan.worktrees}
+    assert found["wt-dirty"].dirty_count == 1 and found["wt-dirty"].is_dirty
+    assert found["wt-gone"].prunable and found["wt-gone"].dirty_count is None
+    assert found["wt-locked"].locked and not found["wt-locked"].removable
+    assert found["wt-merged"].short_branch == "abc-123-fix-login"
+    assert found["wt-merged"].merged
+
+    # still no UI output — reusable in CI
+    assert capsys.readouterr().out == ""
+
+
+def test_scan_repo_back_fills_branch_worktree_path(repo_with_worktrees: Path):
+    scan = scan_repo(make_config(), cwd=repo_with_worktrees)
+    by_name = {b.name: b for b in scan.branches}
+    assert by_name["abc-123-fix-login"].has_worktree
+    assert by_name["old-experiment"].worktree_path is None
+
+
+def test_worktree_join_is_by_reference(repo_with_worktrees: Path):
+    """Mutating a branch's issue after the scan flips WorktreeInfo.issue_done,
+    proving the join stores a reference — so the block's position in scan_repo is
+    a readability choice, not a correctness one."""
+    scan = scan_repo(make_config(), cwd=repo_with_worktrees)
+    worktree = next(wt for wt in scan.worktrees if wt.path.name == "wt-locked")
+    assert not worktree.issue_done
+
+    assert worktree.branch_info is not None
+    worktree.branch_info.issue = IssueInfo(
+        "XYZ-7", "done work", "Done", IssueState.DONE, "https://x/XYZ-7"
+    )
+    assert worktree.issue_done
+
+
+def test_scan_repo_degrades_when_worktree_listing_fails(repo: Path, monkeypatch, capsys):
+    def boom(cwd=None):
+        raise GitError("worktree list exploded")
+
+    monkeypatch.setattr(gitops, "list_worktrees", boom)
+    scan = scan_repo(make_config(), cwd=repo)
+
+    assert scan.worktrees == []
+    assert scan.branches  # branch data still there
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "could not list worktrees" in captured.err
