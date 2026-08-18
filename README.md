@@ -1,5 +1,10 @@
 # git-cleanup
 
+[![PyPI version](https://img.shields.io/pypi/v/git-cleanup)](https://pypi.org/project/git-cleanup/)
+[![Python versions](https://img.shields.io/pypi/pyversions/git-cleanup)](https://pypi.org/project/git-cleanup/)
+[![CI](https://github.com/epicserve/git-cleanup/actions/workflows/ci.yml/badge.svg)](https://github.com/epicserve/git-cleanup/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Interactively clean up git branches that are merged, done in your issue tracker, or stale.
 
 `git-cleanup` fetches and prunes `origin`, gathers every local and remote branch (author,
@@ -94,6 +99,17 @@ Jira is the built-in issue tracker for now; the provider layer is designed so Gi
 Issues, Linear, etc. can be added later. The scan pipeline (`git_cleanup.core.scan_repo`
 + `planner.recommend_actions`) is UI-free and importable, so CI jobs can generate branch
 reports from the same data.
+
+## Install
+
+Requires Python 3.14+ and git.
+
+```console
+$ uv tool install git-cleanup   # install the CLI on your PATH
+$ uvx git-cleanup               # or run it without installing
+```
+
+You can also install it with `pip install git-cleanup` if you prefer.
 
 ## Usage
 
@@ -228,3 +244,13 @@ $ uv run git-cleanup --dry-run
 
 Tests run against real temporary git repositories and a mocked Jira API — no network
 or credentials needed.
+
+With [just](https://github.com/casey/just) installed, `just format`, `just lint`, and
+`just test` wrap the common tasks, and `just pre_commit` runs all three. Releases are
+cut with `just version_bump <major|minor|patch>` followed by pushing the tag — see
+[CLAUDE.md](CLAUDE.md) for the full release process.
+
+## License
+
+[MIT](LICENSE). Provided as is, without warranty of any kind — see the LICENSE file
+for the full text.
