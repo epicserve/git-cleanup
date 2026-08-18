@@ -461,7 +461,7 @@ def test_stashes_dropped_in_descending_index_order(
     as the wrong work destroyed, not merely as an error.
     """
     monkeypatch.chdir(repo_with_stashes)
-    a, b, c, d = stash_shas(repo_with_stashes)
+    a, _b, _c, d = stash_shas(repo_with_stashes)
 
     def choose(branches, worktrees):
         return Outcome(

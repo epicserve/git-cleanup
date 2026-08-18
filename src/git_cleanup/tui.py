@@ -7,6 +7,7 @@ decisions to the caller, which executes them after the TUI exits.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from typing import ClassVar
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -66,7 +67,7 @@ _MAX_DIFF_LINES = 2000
 class SpecInput(Input):
     """Filter/sort spec input; Esc closes it without applying."""
 
-    BINDINGS = [Binding("escape", "cancel_input", "Cancel", show=False)]
+    BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "cancel_input", "Cancel", show=False)]
 
     def action_cancel_input(self) -> None:
         app = self.app
@@ -78,7 +79,7 @@ class SpecInput(Input):
 # reads the focused widget's binding chain) advertises only the active tab's
 # keys. The "app." prefix dispatches to CleanupApp's action methods.
 class BranchTable(DataTable):
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "select_cursor", "Review"),
         Binding("space", "app.cycle", "Cycle action"),
         Binding("d", "app.mark_delete", "Delete (again: local)"),
@@ -95,7 +96,7 @@ class WorktreeTable(DataTable):
     # no filter/sort keys: worktree lists are short. 'r' is deliberately not
     # reused for "remove" — it means "Reset view" one tab over, and a key that
     # means reset in one place and destruction in another is bad muscle memory.
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "select_cursor", "Review"),
         Binding("space", "app.cycle_worktree", "Toggle remove"),
         Binding("d", "app.mark_worktree('remove')", "Remove"),
@@ -108,7 +109,7 @@ class StashTable(DataTable):
     # the destructive key. No filter/sort keys — stash lists are short, and
     # unlike branches they must never be reordered, because reflog order is not
     # date order and the numbers must match the selectors the executor uses.
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "select_cursor", "Review"),
         Binding("space", "app.cycle_stash", "Cycle action"),
         Binding("d", "app.mark_stash('drop')", "Drop"),
@@ -293,7 +294,7 @@ def run_tui(
 class ReviewScreen(ModalScreen[bool]):
     """Grouped summary of pending actions with a final confirm."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("y", "confirm", "Confirm"),
         Binding("n,escape", "cancel", "Cancel"),
     ]
@@ -492,7 +493,7 @@ class CleanupApp(App[Outcome | None]):
     # entries would push the footer past one line. 's' could never be the
     # stashes key: BranchTable's 's' (Sort) sits earlier in the binding chain
     # and shadows any app-level 's' in both dispatch and the footer.
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("left_square_bracket", "cycle_tab(-1)", "Prev tab"),
         Binding("right_square_bracket", "cycle_tab(1)", "Next tab"),
         Binding("b", f"show_tab('{TAB_BRANCHES}')", "Branches", show=False),
@@ -648,10 +649,9 @@ class CleanupApp(App[Outcome | None]):
                 yield BranchTable(id="branch-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Worktrees", id=TAB_WORKTREES):
                 yield WorktreeTable(id="worktree-table", cursor_type="row", zebra_stripes=True)
-            with TabPane("Stashes", id=TAB_STASHES):
-                with Horizontal(id="stash-split"):
-                    yield StashTable(id="stash-table", cursor_type="row", zebra_stripes=True)
-                    yield DiffPane(id="stash-diff")
+            with TabPane("Stashes", id=TAB_STASHES), Horizontal(id="stash-split"):
+                yield StashTable(id="stash-table", cursor_type="row", zebra_stripes=True)
+                yield DiffPane(id="stash-diff")
         yield SpecInput(id="spec-input")
         yield Footer()
 

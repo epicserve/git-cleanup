@@ -38,6 +38,7 @@ def git(*args: str, cwd: Path, env: dict[str, str] | None = None) -> str:
         capture_output=True,
         text=True,
         env=full_env,
+        check=False,
     )
     assert result.returncode == 0, f"git {' '.join(args)}: {result.stderr}"
     return result.stdout.strip()

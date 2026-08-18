@@ -88,7 +88,7 @@ def _run_git_unchecked(
     need — see restore_stash, where the two failure modes share an exit code
     but write to different streams.
     """
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
 
 
 def _run_git(args: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:

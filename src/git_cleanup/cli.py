@@ -374,9 +374,12 @@ def run(args: argparse.Namespace) -> int:
             if branch.has_local and _delete_local(branch, dry_run=args.dry_run):
                 deleted_local += 1
             # DELETE_LOCAL leaves origin alone: the remote branch is the keeper
-            if action is Action.DELETE and branch.has_remote:
-                if _delete_remote(branch, dry_run=args.dry_run):
-                    deleted_remote += 1
+            if (
+                action is Action.DELETE
+                and branch.has_remote
+                and _delete_remote(branch, dry_run=args.dry_run)
+            ):
+                deleted_remote += 1
         elif action is Action.ARCHIVE:
             if _archive(branch, dry_run=args.dry_run):
                 archived += 1

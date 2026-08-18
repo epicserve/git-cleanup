@@ -17,18 +17,18 @@ from git_cleanup.ui import (
 
 
 def make_branch(**overrides) -> BranchInfo:
-    defaults = dict(
-        name="abc-1-thing",
-        has_local=True,
-        has_remote=True,
-        sha="deadbeef",
-        author_name="Brent",
-        author_email="brent@example.com",
-        committed_at=datetime.now(UTC) - timedelta(days=12),
-        merged=False,
-        ahead=0,
-        behind=0,
-    )
+    defaults = {
+        "name": "abc-1-thing",
+        "has_local": True,
+        "has_remote": True,
+        "sha": "deadbeef",
+        "author_name": "Brent",
+        "author_email": "brent@example.com",
+        "committed_at": datetime.now(UTC) - timedelta(days=12),
+        "merged": False,
+        "ahead": 0,
+        "behind": 0,
+    }
     defaults.update(overrides)
     return BranchInfo(**defaults)
 
@@ -62,7 +62,11 @@ def test_sync_text():
 
 
 def make_worktree(**overrides) -> WorktreeInfo:
-    defaults = dict(path=Path("/home/x/wt/thing"), head="deadbeefcafe", branch="refs/heads/feat")
+    defaults = {
+        "path": Path("/home/x/wt/thing"),
+        "head": "deadbeefcafe",
+        "branch": "refs/heads/feat",
+    }
     defaults.update(overrides)
     return WorktreeInfo(**defaults)
 
@@ -113,17 +117,17 @@ def test_render_worktree_table_smoke(capsys):
 
 
 def make_stash(**overrides) -> StashInfo:
-    defaults = dict(
-        index=0,
-        selector="stash@{0}",
-        sha="deadbeefcafe",
-        created_at=datetime.now(UTC) - timedelta(days=4),
-        subject="On main: thing",
-        branch="main",
-        message="thing",
-        wip=False,
-        parent_count=2,
-    )
+    defaults = {
+        "index": 0,
+        "selector": "stash@{0}",
+        "sha": "deadbeefcafe",
+        "created_at": datetime.now(UTC) - timedelta(days=4),
+        "subject": "On main: thing",
+        "branch": "main",
+        "message": "thing",
+        "wip": False,
+        "parent_count": 2,
+    }
     defaults.update(overrides)
     return StashInfo(**defaults)
 

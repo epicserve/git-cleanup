@@ -25,7 +25,7 @@ def ref(name: str, *, remote: bool = False, email: str = ME, days_old: int = 5) 
 
 
 def build(refs, merged_names, **kwargs):
-    defaults = dict(current="main", default="main", protected=frozenset({"main"}))
+    defaults = {"current": "main", "default": "main", "protected": frozenset({"main"})}
     defaults.update(kwargs)
     return planner.build_branches(refs, merged_names, **defaults)
 
@@ -243,16 +243,16 @@ def test_extract_and_attach_issues():
 
 
 def branch_for(name: str, **overrides) -> BranchInfo:
-    defaults = dict(
-        name=name,
-        has_local=True,
-        has_remote=True,
-        sha=f"sha-{name}",
-        author_name="X",
-        author_email=ME,
-        committed_at=NOW - timedelta(days=5),
-        merged=False,
-    )
+    defaults = {
+        "name": name,
+        "has_local": True,
+        "has_remote": True,
+        "sha": f"sha-{name}",
+        "author_name": "X",
+        "author_email": ME,
+        "committed_at": NOW - timedelta(days=5),
+        "merged": False,
+    }
     defaults.update(overrides)
     return BranchInfo(**defaults)
 

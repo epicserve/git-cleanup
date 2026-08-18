@@ -22,18 +22,18 @@ OTHER = "sarah@example.com"
 
 
 def make_branch(name: str, **overrides) -> BranchInfo:
-    defaults = dict(
-        name=name,
-        has_local=True,
-        has_remote=True,
-        sha=f"sha-{name}",
-        author_name="Brent",
-        author_email=ME,
-        committed_at=datetime.now(UTC) - timedelta(days=5),
-        merged=False,
-        ahead=0,
-        behind=0,
-    )
+    defaults = {
+        "name": name,
+        "has_local": True,
+        "has_remote": True,
+        "sha": f"sha-{name}",
+        "author_name": "Brent",
+        "author_email": ME,
+        "committed_at": datetime.now(UTC) - timedelta(days=5),
+        "merged": False,
+        "ahead": 0,
+        "behind": 0,
+    }
     defaults.update(overrides)
     return BranchInfo(**defaults)
 
@@ -61,13 +61,13 @@ def default_branches() -> list[BranchInfo]:
 
 
 def make_app(**overrides) -> CleanupApp:
-    kwargs = dict(
-        my_email=ME,
-        include_all=False,
-        archive_age_days=90,
-        sort_fields=planner.parse_sort("branch"),
-        dry_run=False,
-    )
+    kwargs = {
+        "my_email": ME,
+        "include_all": False,
+        "archive_age_days": 90,
+        "sort_fields": planner.parse_sort("branch"),
+        "dry_run": False,
+    }
     branches = overrides.pop("branches", None) or default_branches()
     kwargs["worktrees"] = overrides.pop("worktrees", [])
     kwargs["stashes"] = overrides.pop("stashes", [])
@@ -414,12 +414,12 @@ async def test_no_dry_run_no_banner():
 
 
 def make_worktree(path: str, branch: str | None = None, **overrides) -> WorktreeInfo:
-    defaults = dict(
-        path=Path(path),
-        head="deadbeefcafe1234",
-        branch=f"refs/heads/{branch}" if branch else None,
-        dirty_count=0,
-    )
+    defaults = {
+        "path": Path(path),
+        "head": "deadbeefcafe1234",
+        "branch": f"refs/heads/{branch}" if branch else None,
+        "dirty_count": 0,
+    }
     defaults.update(overrides)
     return WorktreeInfo(**defaults)
 
@@ -777,18 +777,18 @@ async def test_empty_worktree_list_is_harmless():
 
 
 def make_stash(index: int, message: str, **overrides) -> StashInfo:
-    defaults = dict(
-        index=index,
-        selector=f"stash@{{{index}}}",
-        sha=f"sha{index}",
-        created_at=datetime.now(UTC) - timedelta(days=index + 1),
-        subject=f"On main: {message}",
-        branch="main",
-        message=message,
-        wip=False,
-        parent_count=2,
-        file_count=1,
-    )
+    defaults = {
+        "index": index,
+        "selector": f"stash@{{{index}}}",
+        "sha": f"sha{index}",
+        "created_at": datetime.now(UTC) - timedelta(days=index + 1),
+        "subject": f"On main: {message}",
+        "branch": "main",
+        "message": message,
+        "wip": False,
+        "parent_count": 2,
+        "file_count": 1,
+    }
     defaults.update(overrides)
     return StashInfo(**defaults)
 

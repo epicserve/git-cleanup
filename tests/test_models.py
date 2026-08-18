@@ -16,16 +16,16 @@ from git_cleanup.models import (
 
 
 def make_branch(**overrides) -> BranchInfo:
-    defaults = dict(
-        name="abc-1-thing",
-        has_local=True,
-        has_remote=False,
-        sha="deadbeef",
-        author_name="Brent",
-        author_email="brent@example.com",
-        committed_at=datetime.now(UTC) - timedelta(days=10),
-        merged=False,
-    )
+    defaults = {
+        "name": "abc-1-thing",
+        "has_local": True,
+        "has_remote": False,
+        "sha": "deadbeef",
+        "author_name": "Brent",
+        "author_email": "brent@example.com",
+        "committed_at": datetime.now(UTC) - timedelta(days=10),
+        "merged": False,
+    }
     defaults.update(overrides)
     return BranchInfo(**defaults)
 
@@ -73,7 +73,11 @@ def test_not_eligible_when_unmerged_and_open():
 
 
 def make_worktree(**overrides) -> WorktreeInfo:
-    defaults = dict(path=Path("/home/x/wt/thing"), head="deadbeefcafe", branch="refs/heads/feat")
+    defaults = {
+        "path": Path("/home/x/wt/thing"),
+        "head": "deadbeefcafe",
+        "branch": "refs/heads/feat",
+    }
     defaults.update(overrides)
     return WorktreeInfo(**defaults)
 
@@ -131,17 +135,17 @@ def test_outcome_truthiness():
 
 
 def make_stash(**overrides) -> StashInfo:
-    defaults = dict(
-        index=0,
-        selector="stash@{0}",
-        sha="deadbeefcafe",
-        created_at=datetime.now(UTC) - timedelta(days=4),
-        subject="On main: thing",
-        branch="main",
-        message="thing",
-        wip=False,
-        parent_count=2,
-    )
+    defaults = {
+        "index": 0,
+        "selector": "stash@{0}",
+        "sha": "deadbeefcafe",
+        "created_at": datetime.now(UTC) - timedelta(days=4),
+        "subject": "On main: thing",
+        "branch": "main",
+        "message": "thing",
+        "wip": False,
+        "parent_count": 2,
+    }
     defaults.update(overrides)
     return StashInfo(**defaults)
 
