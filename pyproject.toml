@@ -1,6 +1,6 @@
 [project]
 name = "git-cleanup"
-version = "0.1.0"
+version = "0.1.1"
 description = "Interactively clean up merged, done, and stale git branches using your issue tracker"
 readme = "README.md"
 authors = [
