@@ -1201,7 +1201,7 @@ class CleanupApp(App[Outcome | None]):
             "filter",
             self._filter_spec,
             # kept under 80 chars so it survives on a narrow terminal
-            "filter: mine,age>6m,status!=done, status=/status!= (unset/set); blank clears",
+            "filter: mine,author=sam|chris, status=/status!= (unset/set); blank clears",
         )
 
     def action_open_sort(self) -> None:

@@ -183,6 +183,7 @@ def test_parse_filter():
     assert planner.parse_filter("age<=6m") == [("age", "<=", 180)]
     assert planner.parse_filter("age>1y") == [("age", ">", 365)]
     assert planner.parse_filter("author=sam") == [("text", "author", "sam", True)]
+    assert planner.parse_filter("author=sam|chris") == [("text", "author", "sam|chris", True)]
     assert planner.parse_filter("status!=done") == [("text", "status", "done", False)]
     assert planner.parse_filter("") == []
     # an empty value is a real term: "is the column set?"
@@ -191,6 +192,7 @@ def test_parse_filter():
     assert planner.parse_filter("issue= ") == [("text", "issue", "", True)]
     # bare words search all text columns
     assert planner.parse_filter("brent") == [("text", "any", "brent", True)]
+    assert planner.parse_filter("brent|sarah") == [("text", "any", "brent|sarah", True)]
     assert planner.parse_filter("!wip") == [("text", "any", "wip", False)]
 
 
@@ -223,6 +225,16 @@ def test_filter_branches():
     assert names("sarah") == ["abc-3-theirs"]
     assert names("old") == ["old-thing"]
     assert names("!brent") == ["abc-3-theirs"]
+    # '|' is OR inside one text term; comma is still AND
+    assert names("author=brent|sarah") == [b.name for b in branches]
+    assert names("author=sarah|nobody") == ["abc-3-theirs"]
+    assert names("author!=brent|sarah") == []
+    assert names("abc-1|old") == ["abc-1-merged", "old-thing"]
+    assert names("author=brent|sarah,!merged") == ["abc-2-open", "old-thing"]
+    # empty pieces around '|' do not change the term; surrounding spaces are ignored
+    assert names("author=sarah|") == ["abc-3-theirs"]
+    assert names("author=sarah | nobody") == ["abc-3-theirs"]
+    assert names("author=|") == names("author=")
 
 
 def test_extract_and_attach_issues():

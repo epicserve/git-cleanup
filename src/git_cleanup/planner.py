@@ -143,13 +143,23 @@ _AGE_UNIT_DAYS = {"": 1, "d": 1, "m": 30, "y": 365}
 type FilterTerm = tuple  # ("bool", name, want) | ("age", op, days) | ("text", col, needle, want)
 
 
+def _text_alternatives(needle: str) -> tuple[str, ...]:
+    """Split a text needle on '|'; empty pieces are dropped.
+
+    'sam|chris' -> ('sam', 'chris'); 'sam|' and 'sam' are the same; a needle
+    that is empty or only pipes is the 'column unset/set' form in _matches.
+    """
+    return tuple(part for part in (p.strip() for p in needle.split("|")) if part)
+
+
 def parse_filter(spec: str) -> list[FilterTerm]:
-    """Parse a filter spec like 'mine,!merged,age>90,author=sam' into AND terms.
+    """Parse a filter spec like 'mine,!merged,age>90,author=sam|chris' into AND terms.
 
     Term forms:
       mine / merged / local / remote / gone / worktree   (prefix ! to negate)
       age>N, age<N, age>=N, age<=N            (N in days, or with d/m/y suffix)
       branch=X, author=X, issue=X, status=X   (case-insensitive substring; != excludes)
+      X|Y inside a text needle                (OR: author=sam|chris, or bare sam|chris)
       status= / status!=                      (empty value: column is unset / is set)
       anything else                           (substring match across all text columns)
     """
@@ -220,11 +230,13 @@ def _matches(b: BranchInfo, term: FilterTerm, my_email: str) -> bool:
                 "status": b.issue.status if b.issue else "",
             }
             haystack = " ".join(columns.values()) if col == "any" else columns[col]
-            if not needle:
+            alternatives = _text_alternatives(needle)
+            if not alternatives:
                 # 'status=' keeps branches with no status, 'status!=' only those that
                 # have one. A substring test can't express this: "" is in everything.
                 return bool(haystack.strip()) != want
-            return (needle.lower() in haystack.lower()) == want
+            matched = any(alt.lower() in haystack.lower() for alt in alternatives)
+            return matched == want
     raise AssertionError(f"unreachable: {term}")
 
 

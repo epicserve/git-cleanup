@@ -68,9 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
             "comma-separated filter terms, all must match; a bare word matches any text "
             "column (e.g. --filter brent); flags: mine, merged, local, remote, gone "
             "(prefix ! to negate); age>N/age<N (days, or 6m/1y); column=value substring "
-            "match (branch, author, issue, status; != excludes); an empty value tests "
-            "whether the column is set at all ('status=' for no status, 'status!=' for "
-            "any). Quote specs containing > or ! (e.g. --filter 'mine,age>6m,status!=done'); "
+            "match (branch, author, issue, status; != excludes); '|' ORs alternatives "
+            "inside one text term (author=sam|chris, or bare sam|chris); an empty value "
+            "tests whether the column is set at all ('status=' for no status, 'status!=' "
+            "for any). Quote specs containing >, !, or | "
+            "(e.g. --filter 'mine,author=sam|chris,status!=done'); "
             "default: your last-used filter in this repo"
         ),
     )
