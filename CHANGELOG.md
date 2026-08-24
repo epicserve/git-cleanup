@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-08-24
+
+### Added
+
+- Text filter terms accept `|` as OR, so `--filter 'author=sam|chris'` (or a bare
+  `sam|chris`) matches any alternative. Comma-separated terms are still AND.
+  Quote specs containing `|`.
+
 ## [0.1.1] - 2026-08-18
 
 ### Changed
@@ -37,5 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuration via `~/.config/git-cleanup/config.toml` with per-repository
   overrides and `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` environment variables.
 
+[0.2.0]: https://github.com/epicserve/git-cleanup/releases/tag/v0.2.0
 [0.1.1]: https://github.com/epicserve/git-cleanup/releases/tag/v0.1.1
 [0.1.0]: https://github.com/epicserve/git-cleanup/releases/tag/v0.1.0
