@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-27
+
+### Added
+
+- Worktrees tab shows the same decision columns as Branches (Local, Remote, Sync,
+  Author, Age, Merged, Issue, Status), plus Flags. The full path of the highlighted
+  row sits under the table so those columns stay visible.
+- Boolean filter flags accept `=true` / `=false` (e.g. `merged=true`, `local=false`)
+  in addition to the `merged` / `!merged` shorthand.
+- Ctrl+K command palette includes a Sync column legend (type `sync`).
+
+### Changed
+
+- Merged sits with the other boolean columns (Local, Remote, WT).
+- Local, Remote, and WT use a green check like Merged, instead of a dot.
+
 ## [0.2.0] - 2026-08-24
 
 ### Added
@@ -45,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuration via `~/.config/git-cleanup/config.toml` with per-repository
   overrides and `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` environment variables.
 
+[0.3.0]: https://github.com/epicserve/git-cleanup/releases/tag/v0.3.0
 [0.2.0]: https://github.com/epicserve/git-cleanup/releases/tag/v0.2.0
 [0.1.1]: https://github.com/epicserve/git-cleanup/releases/tag/v0.1.1
 [0.1.0]: https://github.com/epicserve/git-cleanup/releases/tag/v0.1.0
