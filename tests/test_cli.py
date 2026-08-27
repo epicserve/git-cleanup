@@ -18,11 +18,16 @@ def isolated_state(tmp_path: Path, monkeypatch):
 def wide_console(monkeypatch):
     """Render rich tables wide enough that cell content is not folded.
 
-    The overview table has ten columns, so at rich's default 80 it folds branch
+    The overview tables have ten-plus columns, so at rich's default 80 they fold
     names mid-token — fine to look at, but it makes content assertions depend on
-    layout.
+    layout. COLUMNS is ignored when Rich thinks the terminal is dumb (no TTY,
+    TERM=dumb), so pin the module console's size directly.
     """
+    from git_cleanup import ui
+
     monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.setattr(ui.console, "_width", 200)
+    monkeypatch.setattr(ui.console, "_height", 50)
 
 
 @pytest.fixture

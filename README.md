@@ -10,10 +10,11 @@ Interactively clean up git branches that are merged, done in your issue tracker,
 `git-cleanup` fetches and prunes `origin`, gathers every local and remote branch (author,
 age, merged status, ahead/behind counts vs upstream, and linked issue status), then opens
 a full-screen TUI with three tabs. **Branches** is one table of all branches where each row
-carries an action you control. **Worktrees** lists every `git worktree` with its branch,
-its count of uncommitted changes, and whether it is broken or locked. **Stashes** lists
-every stash with its message, origin branch, age, and file count, alongside a live diff
-pane so you can read a stash before deciding its fate.
+carries an action you control. **Worktrees** lists every `git worktree` with the same
+branch decision columns as Branches (plus worktree flags), and shows the full path of
+the highlighted row under the table. **Stashes** lists every stash with its message,
+origin branch, age, and file count, alongside a live diff pane so you can read a stash
+before deciding its fate.
 
 ### Branches
 
@@ -86,6 +87,8 @@ numbering is positional.
 
 On the Stashes tab the diff pane sits to the right of the table at 100 columns or wider,
 and moves below it on narrower terminals so the table always has room for every column.
+On the Worktrees tab the full path of the highlighted row sits under the table, so the
+decision columns can match Branches without crowding the path into the grid.
 
 Filter and sort changes are remembered per repository, so your view comes back the next
 time you run `git-cleanup` there. `r` resets (and forgets) them.

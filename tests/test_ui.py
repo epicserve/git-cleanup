@@ -6,7 +6,8 @@ import pytest
 from git_cleanup.models import BranchInfo, StashInfo, WorktreeInfo
 from git_cleanup.ui import (
     _sync_text,
-    _worktree_state_text,
+    _worktree_branch_text,
+    console,
     format_age,
     format_worktree_path,
     render_stash_table,
@@ -71,14 +72,11 @@ def make_worktree(**overrides) -> WorktreeInfo:
     return WorktreeInfo(**defaults)
 
 
-def test_worktree_state_text_precedence():
-    # a missing directory outranks a lock: the lock is moot once it is gone
-    assert _worktree_state_text(make_worktree(prunable=True, locked=True)) == "missing"
-    assert _worktree_state_text(make_worktree(locked=True, bare=True)) == "locked"
-    assert _worktree_state_text(make_worktree(bare=True, is_main=True)) == "bare"
-    assert _worktree_state_text(make_worktree(is_main=True, detached=True)) == "main"
-    assert _worktree_state_text(make_worktree(detached=True)) == "detached"
-    assert _worktree_state_text(make_worktree()) == ""
+def test_worktree_branch_text():
+    assert _worktree_branch_text(make_worktree()) == "feat"
+    assert _worktree_branch_text(make_worktree(bare=True, branch=None)) == "(bare)"
+    assert _worktree_branch_text(make_worktree(branch=None, detached=True)) == "(deadbeef) detached"
+    assert _worktree_branch_text(make_worktree(branch=None, head=None)) == "—"
 
 
 def test_worktree_flags_are_orthogonal():
@@ -99,8 +97,10 @@ def test_format_worktree_path_collapses_home(monkeypatch):
     assert format_worktree_path(Path("/var/tmp/wt")) == "/var/tmp/wt"
 
 
-def test_render_worktree_table_smoke(capsys):
+def test_render_worktree_table_smoke(capsys, monkeypatch):
     """Covers the age_days is None and dirty_count is None branches."""
+    monkeypatch.setattr(console, "_width", 200)
+    monkeypatch.setattr(console, "_height", 50)
     branch = make_branch(name="feat", merged=True, issue_key="ABC-1")
     render_worktree_table(
         [
@@ -114,6 +114,10 @@ def test_render_worktree_table_smoke(capsys):
     out = capsys.readouterr().out
     assert "Worktrees" in out
     assert "missing" in out and "detached" in out
+    assert "Local" in out and "Remote" in out and "Sync" in out and "Author" in out
+    assert "Status" in out and "Flags" in out
+    assert "Brent" in out  # from branch_info on the dirty row
+    assert "Changes" not in out and "State" not in out
 
 
 def make_stash(**overrides) -> StashInfo:

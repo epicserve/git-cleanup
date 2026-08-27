@@ -490,6 +490,12 @@ def worktree_table(app: CleanupApp) -> DataTable:
     return app.query_one("#worktree-table", DataTable)
 
 
+def worktree_detail_text(app: CleanupApp) -> str:
+    content = app.query_one("#worktree-detail", Static).content
+    assert isinstance(content, Text)
+    return content.plain
+
+
 async def test_worktree_premarks():
     app = worktree_app()
     async with app.run_test():
@@ -654,6 +660,69 @@ async def test_branches_tab_shows_wt_column():
         table = app.query_one("#branch-table", DataTable)
         labels = [str(col.label) for col in table.columns.values()]
         assert labels.index("WT") == labels.index("Remote") + 1
+
+
+async def test_worktree_table_matches_branch_columns_plus_flags():
+    app = worktree_app()
+    async with app.run_test():
+        labels = [str(col.label) for col in worktree_table(app).columns.values()]
+        assert labels == [
+            "Action",
+            "Branch",
+            "Local",
+            "Remote",
+            "Sync",
+            "Author",
+            "Age",
+            "Merged",
+            "Issue",
+            "Status",
+            "Flags",
+        ]
+
+
+async def test_worktree_row_uses_branch_info():
+    app = worktree_app()
+    async with app.run_test():
+        table = worktree_table(app)
+        assert table.get_cell("/wt/clean", "branch").plain == "wt-clean"
+        assert table.get_cell("/wt/clean", "local").plain == "●"
+        assert table.get_cell("/wt/clean", "remote").plain == "●"
+        assert table.get_cell("/wt/clean", "sync").plain == "✓"
+        assert table.get_cell("/wt/clean", "author").plain == "Brent"
+
+
+async def test_detached_worktree_shows_dashes_for_branch_metrics():
+    app = worktree_app()
+    async with app.run_test():
+        table = worktree_table(app)
+        assert "(deadbeef) detached" in table.get_cell("/wt/gone", "branch").plain
+        assert table.get_cell("/wt/gone", "local").plain == ""
+        assert table.get_cell("/wt/gone", "remote").plain == ""
+        assert table.get_cell("/wt/gone", "sync").plain == ""
+        assert table.get_cell("/wt/gone", "author").plain == "—"
+        assert table.get_cell("/wt/gone", "age").plain == "—"
+        assert table.get_cell("/wt/gone", "issue").plain == "—"
+        assert table.get_cell("/wt/gone", "status").plain == "—"
+
+
+async def test_worktree_detail_primes_on_tab_activation():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        text = worktree_detail_text(app)
+        assert "Path  /repo" in text
+        assert "*" in text  # current worktree
+
+
+async def test_worktree_detail_follows_the_cursor_and_shows_lock_reason():
+    app = worktree_app()
+    async with app.run_test() as pilot:
+        await to_worktrees(app, pilot)
+        await pilot.press("down", "down", "down")  # /wt/locked
+        text = worktree_detail_text(app)
+        assert "/wt/locked" in text
+        assert "locked: on a network share" in text
 
 
 async def test_enter_from_worktrees_tab_opens_review():

@@ -62,30 +62,21 @@ def format_worktree_path(path: Path) -> str:
         return str(path)
 
 
-def _worktree_state_text(wt: WorktreeInfo) -> str:
-    """The single most important thing about a worktree, as plain text.
-
-    Precedence: a missing directory outranks a lock (the lock is moot once the
-    checkout is gone), which outranks the structural bare/main/detached facts.
-    """
-    if wt.is_missing:
-        return "missing"
-    if wt.locked:
-        return "locked"
+def _worktree_branch_text(wt: WorktreeInfo) -> str:
     if wt.bare:
-        return "bare"
-    if wt.is_main:
-        return "main"
-    if wt.detached:
-        return "detached"
-    return ""
+        return "(bare)"
+    if wt.short_branch:
+        return wt.short_branch
+    if wt.head:
+        return f"({wt.head[:8]}) detached"
+    return "—"
 
 
 def worktree_flags(wt: WorktreeInfo) -> list[str]:
     """Every notable state of a worktree, as words.
 
-    Unlike _worktree_state_text these are orthogonal and all shown: five states
-    with no established icon vocabulary, so words beat invented glyphs.
+    Orthogonal and all shown: five states with no established icon vocabulary,
+    so words beat invented glyphs.
     """
     flags = []
     if wt.is_main:
@@ -103,15 +94,40 @@ def worktree_flags(wt: WorktreeInfo) -> list[str]:
     return flags
 
 
+_FLAG_MARKUP = {
+    "main": "dim",
+    "bare": "dim",
+    "detached": "dim",
+    "missing": "yellow",
+    "locked": "yellow",
+    "dirty": "bold red",
+}
+
+
+def _flags_label(wt: WorktreeInfo) -> str:
+    """Flags styled for the rich overview table."""
+    parts = []
+    for flag in worktree_flags(wt):
+        style = _FLAG_MARKUP.get(flag.split()[0], "")
+        parts.append(f"[{style}]{flag}[/{style}]" if style else flag)
+    return " ".join(parts)
+
+
 def render_worktree_table(worktrees: Sequence[WorktreeInfo]) -> None:
     table = Table(title="Worktrees", header_style="bold")
-    table.add_column("Worktree", overflow="fold")
+    # path is the row's identity here (the TUI keeps it off the grid); fold it
+    # so the branch decision columns still fit at 80
+    table.add_column("Worktree", overflow="fold", ratio=3)
     table.add_column("Branch", overflow="fold")
+    table.add_column("Local", justify="center")
+    table.add_column("Remote", justify="center")
+    table.add_column("Sync", justify="center")
+    table.add_column("Author", overflow="fold", ratio=1)
     table.add_column("Age", justify="right")
     table.add_column("Merged", justify="center")
     table.add_column("Issue")
-    table.add_column("Changes", justify="right")
-    table.add_column("State")
+    table.add_column("Status")
+    table.add_column("Flags")
 
     for wt in worktrees:
         path = format_worktree_path(wt.path)
@@ -119,21 +135,38 @@ def render_worktree_table(worktrees: Sequence[WorktreeInfo]) -> None:
             path = f"[bold green]{path}*[/bold green]"
         elif not wt.removable:
             path = f"[dim]{path}[/dim]"
-        if wt.dirty_count is None:
-            changes = "—"
+        branch = _worktree_branch_text(wt)
+        if not wt.removable:
+            branch = f"[dim]{branch}[/dim]"
+        info = wt.branch_info
+        if info is None:
+            local = remote = sync = merged = ""
+            author = age = issue = status = "—"
         else:
-            changes = f"[red]{wt.dirty_count}[/red]" if wt.dirty_count else "0"
-        state = _worktree_state_text(wt)
-        if state in ("missing", "locked"):
-            state = f"[yellow]{state}[/yellow]"
+            local = "●" if info.has_local else ""
+            remote = "●" if info.has_remote else ""
+            sync = _sync_label(info)
+            author = info.author_name
+            age = format_age(info.age_days)
+            merged = "[green]✓[/green]" if info.merged else ""
+            issue = info.issue_key or "—"
+            status_text = info.issue.status if info.issue else "—"
+            status_style = "green" if info.issue_done else ""
+            status = (
+                f"[{status_style}]{status_text}[/{status_style}]" if status_style else status_text
+            )
         table.add_row(
             path,
-            wt.short_branch or ("(bare)" if wt.bare else "(detached)"),
-            format_age(wt.age_days) if wt.age_days is not None else "—",
-            "[green]✓[/green]" if wt.merged else "",
-            (wt.branch_info.issue_key if wt.branch_info else None) or "—",
-            changes,
-            state,
+            branch,
+            local,
+            remote,
+            sync,
+            author,
+            age,
+            merged,
+            issue,
+            status,
+            _flags_label(wt),
         )
     console.print(table)
 

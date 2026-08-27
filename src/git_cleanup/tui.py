@@ -41,6 +41,7 @@ from git_cleanup.models import (
 )
 from git_cleanup.ui import (
     _sync_text,
+    _worktree_branch_text,
     format_age,
     format_worktree_path,
     stash_files_label,
@@ -237,16 +238,6 @@ def _flags_cell(wt: WorktreeInfo) -> Text:
             cell.append(" ")
         cell.append(flag, style=_FLAG_STYLES.get(flag.split()[0], ""))
     return cell
-
-
-def _worktree_branch_text(wt: WorktreeInfo) -> str:
-    if wt.bare:
-        return "(bare)"
-    if wt.short_branch:
-        return wt.short_branch
-    if wt.head:
-        return f"({wt.head[:8]}) detached"
-    return "—"
 
 
 def run_tui(
@@ -514,6 +505,13 @@ class CleanupApp(App[Outcome | None]):
     #tabs { height: 1fr; }
     #tabs TabPane { height: 1fr; }
     DataTable { height: 1fr; }
+    #worktree-split { height: 1fr; }
+    /* docked so the DataTable's 1fr cannot eat this row: without it the table
+       paints empty zebra rows all the way to the footer and the path vanishes */
+    #worktree-detail {
+        dock: bottom; height: 1; width: 100%;
+        padding: 0 1; background: $primary-darken-2;
+    }
     #stash-split { height: 1fr; layout: horizontal; }
     #stash-table { width: 1fr; height: 1fr; }
     #stash-diff { width: 1fr; height: 1fr; padding: 0 1; border-left: solid $primary; }
@@ -640,6 +638,10 @@ class CleanupApp(App[Outcome | None]):
     def _diff_pane(self) -> DiffPane:
         return self.query_one("#stash-diff", DiffPane)
 
+    @property
+    def _worktree_detail(self) -> Static:
+        return self.query_one("#worktree-detail", Static)
+
     def compose(self) -> ComposeResult:
         yield Static(id="status")
         # every pane is always composed: the main worktree is always a row, so
@@ -647,8 +649,9 @@ class CleanupApp(App[Outcome | None]):
         with TabbedContent(id="tabs", initial=TAB_BRANCHES):
             with TabPane("Branches", id=TAB_BRANCHES):
                 yield BranchTable(id="branch-table", cursor_type="row", zebra_stripes=True)
-            with TabPane("Worktrees", id=TAB_WORKTREES):
+            with TabPane("Worktrees", id=TAB_WORKTREES), Vertical(id="worktree-split"):
                 yield WorktreeTable(id="worktree-table", cursor_type="row", zebra_stripes=True)
+                yield Static(id="worktree-detail")
             with TabPane("Stashes", id=TAB_STASHES), Horizontal(id="stash-split"):
                 yield StashTable(id="stash-table", cursor_type="row", zebra_stripes=True)
                 yield DiffPane(id="stash-diff")
@@ -684,8 +687,11 @@ class CleanupApp(App[Outcome | None]):
         worktree_table = self._worktree_table
         worktree_table.add_column("Action", key="action", width=len(WorktreeAction.REMOVE))
         for key, label in (
-            ("worktree", "Worktree"),
             ("branch", "Branch"),
+            ("local", "Local"),
+            ("remote", "Remote"),
+            ("sync", "Sync"),
+            ("author", "Author"),
             ("age", "Age"),
             ("merged", "Merged"),
             ("issue", "Issue"),
@@ -721,17 +727,27 @@ class CleanupApp(App[Outcome | None]):
         action = self.actions.get(name, Action.KEEP)
         return Text(action.value, style=_ACTION_STYLES[action])
 
-    def _row_cells(self, b: BranchInfo) -> list[Text]:
-        name = Text(b.name + ("*" if b.is_current else ""))
-        if b.is_current or b.is_default or b.is_protected:
-            name.stylize("dim")
+    def _branch_metric_cells(self, b: BranchInfo | None) -> list[Text]:
+        """Local, Remote, Sync, Author, Age, Merged, Issue, Status.
+
+        Shared by the Branches and Worktrees tables so the two cannot drift.
+        WT is Branches-only: every worktree row already is one.
+        """
+        if b is None:
+            return [
+                Text(""),
+                Text(""),
+                Text(""),
+                Text("—"),
+                Text("—"),
+                Text(""),
+                Text("—"),
+                Text("—"),
+            ]
         age_style = "yellow" if b.age_days >= self._archive_age_days else ""
         return [
-            self._action_cell(b.name),
-            name,
             Text("●" if b.has_local else ""),
             Text("●" if b.has_remote else ""),
-            Text("●" if b.has_worktree else ""),
             Text(_sync_text(b)),
             Text(b.author_name),
             Text(format_age(b.age_days), style=age_style),
@@ -741,6 +757,25 @@ class CleanupApp(App[Outcome | None]):
                 b.issue.status if b.issue else "—",
                 style="green" if b.issue_done else "",
             ),
+        ]
+
+    def _row_cells(self, b: BranchInfo) -> list[Text]:
+        name = Text(b.name + ("*" if b.is_current else ""))
+        if b.is_current or b.is_default or b.is_protected:
+            name.stylize("dim")
+        local, remote, sync, author, age, merged, issue, status = self._branch_metric_cells(b)
+        return [
+            self._action_cell(b.name),
+            name,
+            local,
+            remote,
+            Text("●" if b.has_worktree else ""),
+            sync,
+            author,
+            age,
+            merged,
+            issue,
+            status,
         ]
 
     def _rebuild_table(self) -> None:
@@ -755,23 +790,13 @@ class CleanupApp(App[Outcome | None]):
         return Text(action.value, style=_WORKTREE_ACTION_STYLES[action])
 
     def _worktree_row_cells(self, wt: WorktreeInfo) -> list[Text]:
-        path = Text(format_worktree_path(wt.path) + ("*" if wt.is_current else ""))
+        name = Text(_worktree_branch_text(wt))
         if not wt.removable:
-            path.stylize("dim")
-        age = wt.age_days
-        age_style = "yellow" if age is not None and age >= self._archive_age_days else ""
-        branch_info = wt.branch_info
+            name.stylize("dim")
         return [
             self._worktree_action_cell(wt.name),
-            path,
-            Text(_worktree_branch_text(wt)),
-            Text(format_age(age) if age is not None else "—", style=age_style),
-            Text("✓" if wt.merged else "", style="green"),
-            Text((branch_info.issue_key if branch_info else None) or "—"),
-            Text(
-                branch_info.issue.status if branch_info and branch_info.issue else "—",
-                style="green" if wt.issue_done else "",
-            ),
+            name,
+            *self._branch_metric_cells(wt.branch_info),
             _flags_cell(wt),
         ]
 
@@ -939,6 +964,8 @@ class CleanupApp(App[Outcome | None]):
             # prime explicitly rather than relying on Textual's incidental
             # re-highlight when a pane activates; the cache absorbs the duplicate
             self._show_diff(self._cursor_key(self._stash_table))
+        elif self._active_tab == TAB_WORKTREES:
+            self._show_worktree_detail(self._cursor_key(self._worktree_table))
         self._refresh_status()
         self.refresh_bindings()
 
@@ -1108,10 +1135,30 @@ class CleanupApp(App[Outcome | None]):
         # Two filters, both load-bearing. RowHighlighted bubbles from *every*
         # table in the app, so the id check is required. And add_row posts one
         # for row 0 as the table is built, so without the active-tab check a
-        # user who never opens this tab would still pay for a diff fetch at
-        # startup; activation primes the pane explicitly instead.
-        if event.data_table.id == "stash-table" and self._active_tab == TAB_STASHES:
+        # user who never opens Stashes would still pay for a diff fetch at
+        # startup; activation primes each pane explicitly instead.
+        table_id = event.data_table.id
+        if table_id == "stash-table" and self._active_tab == TAB_STASHES:
             self._show_diff(event.row_key.value)
+        elif table_id == "worktree-table" and self._active_tab == TAB_WORKTREES:
+            self._show_worktree_detail(event.row_key.value)
+
+    def _worktree_detail_text(self, wt: WorktreeInfo | None) -> Text:
+        if wt is None:
+            return Text("")
+        path = format_worktree_path(wt.path) + ("*" if wt.is_current else "")
+        line = Text("Path  ")
+        line.append(path)
+        if not wt.removable:
+            line.stylize("dim")
+        if wt.locked:
+            detail = f": {wt.lock_reason}" if wt.lock_reason else ""
+            line.append(f"  locked{detail}", style="yellow")
+        return line
+
+    def _show_worktree_detail(self, key: str | None) -> None:
+        wt = self._by_path.get(key or "")
+        self._worktree_detail.update(self._worktree_detail_text(wt))
 
     def _show_diff(self, key: str | None) -> None:
         pane = self._diff_pane
