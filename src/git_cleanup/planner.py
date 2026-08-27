@@ -89,10 +89,10 @@ _SORT_KEYS = {
     "local": lambda b: b.has_local,
     "remote": lambda b: b.has_remote,
     "worktree": lambda b: b.has_worktree,
+    "merged": lambda b: b.merged,
     "sync": lambda b: (b.ahead or 0, b.behind or 0),
     "author": lambda b: b.author_name.lower(),
     "age": lambda b: b.age_days,
-    "merged": lambda b: b.merged,
     "issue": lambda b: (b.issue_key or "").lower(),
     "status": lambda b: b.issue.status.lower() if b.issue else "",
 }
@@ -136,6 +136,7 @@ def sort_branches(
 
 
 _BOOL_COLUMNS = ("mine", "merged", "local", "remote", "gone", "worktree")
+_BOOL_VALUES = {"true": True, "false": False}
 _TEXT_COLUMNS = ("branch", "author", "issue", "status")
 _AGE_TERM_RE = re.compile(r"^age(>=|<=|>|<)(\d+)([dmy]?)$")
 _AGE_UNIT_DAYS = {"": 1, "d": 1, "m": 30, "y": 365}
@@ -157,6 +158,7 @@ def parse_filter(spec: str) -> list[FilterTerm]:
 
     Term forms:
       mine / merged / local / remote / gone / worktree   (prefix ! to negate)
+      merged=true / local=false / worktree!=true         (same flags, explicit)
       age>N, age<N, age>=N, age<=N            (N in days, or with d/m/y suffix)
       branch=X, author=X, issue=X, status=X   (case-insensitive substring; != excludes)
       X|Y inside a text needle                (OR: author=sam|chris, or bare sam|chris)
@@ -182,13 +184,24 @@ def parse_filter(spec: str) -> list[FilterTerm]:
             col, _, needle = raw.partition("=")
             want = not col.endswith("!")
             col = col.rstrip("!").strip().lower()
+            value = needle.strip()
+            if col in _BOOL_COLUMNS:
+                flag = _BOOL_VALUES.get(value.lower())
+                if flag is None:
+                    raise ValueError(
+                        f"bad filter term {raw!r} (boolean columns take true or false; "
+                        f"choose from: {', '.join(_BOOL_COLUMNS)})"
+                    )
+                terms.append(("bool", col, flag if want else not flag))
+                continue
             if col not in _TEXT_COLUMNS:
                 raise ValueError(
-                    f"bad filter term {raw!r} (text columns: {', '.join(_TEXT_COLUMNS)})"
+                    f"bad filter term {raw!r} (text columns: {', '.join(_TEXT_COLUMNS)}; "
+                    f"boolean columns: {', '.join(_BOOL_COLUMNS)})"
                 )
             # An empty needle is meaningful, not a typo: it tests whether the column
             # has any value at all. See _matches.
-            terms.append(("text", col, needle.strip(), want))
+            terms.append(("text", col, value, want))
             continue
         want = not raw.startswith("!")
         name = raw.removeprefix("!").lower()

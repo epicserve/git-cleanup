@@ -87,6 +87,20 @@ async def test_premarks():
         assert "main" not in app.actions  # protected
 
 
+async def test_palette_lists_sync_legend():
+    app = make_app()
+    async with app.run_test():
+        commands = list(app.get_system_commands(app.screen))
+        titles = [c.title for c in commands]
+        assert "Sync column" in titles
+        assert "Sync: ✓" in titles
+        assert "Sync: gone" in titles
+        by_title = {c.title: c for c in commands}
+        assert by_title["Sync column"].discover is True
+        assert by_title["Sync: ✓"].discover is False
+        assert "upstream" in by_title["Sync column"].help
+
+
 async def test_include_all_premarks_others():
     app = make_app(include_all=True)
     async with app.run_test():
@@ -660,6 +674,7 @@ async def test_branches_tab_shows_wt_column():
         table = app.query_one("#branch-table", DataTable)
         labels = [str(col.label) for col in table.columns.values()]
         assert labels.index("WT") == labels.index("Remote") + 1
+        assert labels.index("Merged") == labels.index("WT") + 1
 
 
 async def test_worktree_table_matches_branch_columns_plus_flags():
@@ -671,10 +686,10 @@ async def test_worktree_table_matches_branch_columns_plus_flags():
             "Branch",
             "Local",
             "Remote",
+            "Merged",
             "Sync",
             "Author",
             "Age",
-            "Merged",
             "Issue",
             "Status",
             "Flags",
@@ -686,8 +701,9 @@ async def test_worktree_row_uses_branch_info():
     async with app.run_test():
         table = worktree_table(app)
         assert table.get_cell("/wt/clean", "branch").plain == "wt-clean"
-        assert table.get_cell("/wt/clean", "local").plain == "●"
-        assert table.get_cell("/wt/clean", "remote").plain == "●"
+        assert table.get_cell("/wt/clean", "local").plain == "✓"
+        assert table.get_cell("/wt/clean", "remote").plain == "✓"
+        assert table.get_cell("/wt/clean", "merged").plain == "✓"
         assert table.get_cell("/wt/clean", "sync").plain == "✓"
         assert table.get_cell("/wt/clean", "author").plain == "Brent"
 
@@ -699,6 +715,7 @@ async def test_detached_worktree_shows_dashes_for_branch_metrics():
         assert "(deadbeef) detached" in table.get_cell("/wt/gone", "branch").plain
         assert table.get_cell("/wt/gone", "local").plain == ""
         assert table.get_cell("/wt/gone", "remote").plain == ""
+        assert table.get_cell("/wt/gone", "merged").plain == ""
         assert table.get_cell("/wt/gone", "sync").plain == ""
         assert table.get_cell("/wt/gone", "author").plain == "—"
         assert table.get_cell("/wt/gone", "age").plain == "—"

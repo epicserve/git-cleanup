@@ -179,6 +179,10 @@ def test_parse_filter():
         ("bool", "mine", True),
         ("bool", "merged", False),
     ]
+    assert planner.parse_filter("merged=true") == [("bool", "merged", True)]
+    assert planner.parse_filter("local=false") == [("bool", "local", False)]
+    assert planner.parse_filter("worktree!=true") == [("bool", "worktree", False)]
+    assert planner.parse_filter("gone=TRUE") == [("bool", "gone", True)]
     assert planner.parse_filter("age>90") == [("age", ">", 90)]
     assert planner.parse_filter("age<=6m") == [("age", "<=", 180)]
     assert planner.parse_filter("age>1y") == [("age", ">", 365)]
@@ -221,6 +225,9 @@ def test_filter_branches():
     assert names("status!=") == ["abc-2-open"]
     assert names("status=") == [b.name for b in branches if b.name != "abc-2-open"]
     assert names("!remote") == ["old-thing"]
+    assert names("merged=true") == names("merged")
+    assert names("local=false") == names("!local")
+    assert names("remote!=true") == names("!remote")
     # bare word matches any text column (author email here)
     assert names("sarah") == ["abc-3-theirs"]
     assert names("old") == ["old-thing"]
@@ -426,8 +433,10 @@ def test_recommend_worktree_prunable_wins_over_protected_branch():
 def test_worktree_filter_and_sort_terms():
     assert planner.parse_filter("worktree") == [("bool", "worktree", True)]
     assert planner.parse_filter("!worktree") == [("bool", "worktree", False)]
-    with pytest.raises(ValueError):
-        planner.parse_filter("worktree=x")  # not a text column
+    assert planner.parse_filter("worktree=true") == [("bool", "worktree", True)]
+    assert planner.parse_filter("worktree=false") == [("bool", "worktree", False)]
+    with pytest.raises(ValueError, match="true or false"):
+        planner.parse_filter("worktree=x")
     assert planner.parse_sort("worktree") == [("worktree", False)]
     assert "worktree" in planner.SORT_COLUMNS
 

@@ -21,10 +21,10 @@ def render_branch_table(branches: Sequence[BranchInfo]) -> None:
     table.add_column("Local", justify="center")
     table.add_column("Remote", justify="center")
     table.add_column("WT", justify="center")
+    table.add_column("Merged", justify="center")
     table.add_column("Sync", justify="center")
     table.add_column("Author", overflow="fold", ratio=1)
     table.add_column("Age", justify="right")
-    table.add_column("Merged", justify="center")
     table.add_column("Issue")
     table.add_column("Status")
 
@@ -38,13 +38,13 @@ def render_branch_table(branches: Sequence[BranchInfo]) -> None:
         status_style = "green" if b.issue_done else ""
         table.add_row(
             name,
-            "●" if b.has_local else "",
-            "●" if b.has_remote else "",
-            "●" if b.has_worktree else "",
+            "[green]✓[/green]" if b.has_local else "",
+            "[green]✓[/green]" if b.has_remote else "",
+            "[green]✓[/green]" if b.has_worktree else "",
+            "[green]✓[/green]" if b.merged else "",
             _sync_label(b),
             b.author_name,
             format_age(b.age_days),
-            "[green]✓[/green]" if b.merged else "",
             b.issue_key or "—",
             f"[{status_style}]{status}[/{status_style}]" if status_style else status,
         )
@@ -121,10 +121,10 @@ def render_worktree_table(worktrees: Sequence[WorktreeInfo]) -> None:
     table.add_column("Branch", overflow="fold")
     table.add_column("Local", justify="center")
     table.add_column("Remote", justify="center")
+    table.add_column("Merged", justify="center")
     table.add_column("Sync", justify="center")
     table.add_column("Author", overflow="fold", ratio=1)
     table.add_column("Age", justify="right")
-    table.add_column("Merged", justify="center")
     table.add_column("Issue")
     table.add_column("Status")
     table.add_column("Flags")
@@ -140,15 +140,15 @@ def render_worktree_table(worktrees: Sequence[WorktreeInfo]) -> None:
             branch = f"[dim]{branch}[/dim]"
         info = wt.branch_info
         if info is None:
-            local = remote = sync = merged = ""
+            local = remote = merged = sync = ""
             author = age = issue = status = "—"
         else:
-            local = "●" if info.has_local else ""
-            remote = "●" if info.has_remote else ""
+            local = "[green]✓[/green]" if info.has_local else ""
+            remote = "[green]✓[/green]" if info.has_remote else ""
+            merged = "[green]✓[/green]" if info.merged else ""
             sync = _sync_label(info)
             author = info.author_name
             age = format_age(info.age_days)
-            merged = "[green]✓[/green]" if info.merged else ""
             issue = info.issue_key or "—"
             status_text = info.issue.status if info.issue else "—"
             status_style = "green" if info.issue_done else ""
@@ -160,10 +160,10 @@ def render_worktree_table(worktrees: Sequence[WorktreeInfo]) -> None:
             branch,
             local,
             remote,
+            merged,
             sync,
             author,
             age,
-            merged,
             issue,
             status,
             _flags_label(wt),

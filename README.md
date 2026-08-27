@@ -75,6 +75,7 @@ changes.
 | `/` | Live filter (same syntax as `--filter`) |
 | `s` | Live sort (same syntax as `--sort`) |
 | `r` | Reset filter & sort to defaults |
+| `Ctrl+K` | Command palette — includes a Sync column legend (type "sync") |
 | `Ctrl+D` / `Ctrl+U` | Scroll the stash diff pane |
 | `Enter` | Review and confirm |
 | `q` / `Esc` | Quit without changes |
@@ -128,8 +129,8 @@ $ uvx git-cleanup --dry-run  # preview everything, change nothing
 | `--dry-run` | Full run with zero mutations — prints `[dry-run] would delete ...` instead |
 | `--no-fetch` | Skip the initial `git fetch --prune origin` |
 | `--all` | Pre-mark other authors' cleanup-eligible branches for deletion too |
-| `--sort COLS` | Sort columns, comma-separated, `-` prefix for descending — e.g. `--sort=-age,status,author`. Columns: `branch`, `local`, `remote`, `worktree`, `sync`, `author`, `age`, `merged`, `issue`, `status` |
-| `--filter TERMS` | Only show branches matching all terms — e.g. `--filter 'mine,age>6m,status!=done'`. A bare word matches any text column (`--filter brent`). Flags: `mine`, `merged`, `local`, `remote`, `gone`, `worktree` (prefix `!` to negate); `age>N`/`age<N`/`age>=N`/`age<=N` in days or with `d`/`m`/`y` suffix; substring matches `branch=X`, `author=X`, `issue=X`, `status=X` (`!=` excludes). `|` ORs alternatives inside one text term (`author=sam|chris`, or a bare `sam|chris`). An empty value tests whether the column is set at all — `status=` keeps only branches with no status, `status!=` only those that have one. Quote specs containing `>`, `!`, or `|` |
+| `--sort COLS` | Sort columns, comma-separated, `-` prefix for descending — e.g. `--sort=-age,status,author`. Columns: `branch`, `local`, `remote`, `worktree`, `merged`, `sync`, `author`, `age`, `issue`, `status` |
+| `--filter TERMS` | Only show branches matching all terms — e.g. `--filter 'mine,age>6m,status!=done'`. A bare word matches any text column (`--filter brent`). Boolean flags: `mine`, `merged`, `local`, `remote`, `gone`, `worktree` — prefix `!` to negate, or use `=true`/`=false` (e.g. `merged=true`, `local=false`). `age>N`/`age<N`/`age>=N`/`age<=N` in days or with `d`/`m`/`y` suffix; substring matches `branch=X`, `author=X`, `issue=X`, `status=X` (`!=` excludes). `|` ORs alternatives inside one text term (`author=sam|chris`, or a bare `sam|chris`). An empty value tests whether the column is set at all — `status=` keeps only branches with no status, `status!=` only those that have one. Quote specs containing `>`, `!`, or `|` |
 | `--config PATH` | Use an alternate config file |
 | `--version` | Print the version |
 

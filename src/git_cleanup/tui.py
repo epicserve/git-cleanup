@@ -6,15 +6,15 @@ decisions to the caller, which executes them after the TUI exits.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import ClassVar
 
 from rich.text import Text
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Resize
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     DataTable,
@@ -188,6 +188,20 @@ _DIFF_LINE_STYLES = (
     ("@@", "cyan"),
     ("+", "green"),
     ("-", "red"),
+)
+# Ctrl+K palette: one discoverable overview, then per-symbol hits when you type "sync"
+_SYNC_OVERVIEW = (
+    "Sync is local vs upstream: ✓ in sync, ↑N ahead (unpushed), ↓N behind, "
+    "↑N ↓M diverged, gone (upstream deleted), — no upstream, empty if remote-only."
+)
+_SYNC_LEGEND = (
+    ("Sync: ✓", "Local and upstream point at the same commit"),
+    ("Sync: ↑N", "Local is N commits ahead of upstream (unpushed)"),
+    ("Sync: ↓N", "Local is N commits behind (need to pull)"),
+    ("Sync: ↑N ↓M", "Diverged: local is ahead and behind"),
+    ("Sync: gone", "The upstream ref was deleted on origin"),
+    ("Sync: —", "Local exists but has no upstream set"),
+    ("Sync: (empty)", "No local branch (remote-only row)"),
 )
 
 
@@ -675,10 +689,10 @@ class CleanupApp(App[Outcome | None]):
             ("local", "Local"),
             ("remote", "Remote"),
             ("worktree", "WT"),
+            ("merged", "Merged"),
             ("sync", "Sync"),
             ("author", "Author"),
             ("age", "Age"),
-            ("merged", "Merged"),
             ("issue", "Issue"),
             ("status", "Status"),
         ):
@@ -690,10 +704,10 @@ class CleanupApp(App[Outcome | None]):
             ("branch", "Branch"),
             ("local", "Local"),
             ("remote", "Remote"),
+            ("merged", "Merged"),
             ("sync", "Sync"),
             ("author", "Author"),
             ("age", "Age"),
-            ("merged", "Merged"),
             ("issue", "Issue"),
             ("status", "Status"),
             ("flags", "Flags"),
@@ -723,12 +737,27 @@ class CleanupApp(App[Outcome | None]):
     def _apply_stack_layout(self, width: int) -> None:
         self.query_one("#stash-split").set_class(width < _STACK_BELOW_WIDTH, "stacked")
 
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        yield from super().get_system_commands(screen)
+        yield SystemCommand(
+            "Sync column",
+            _SYNC_OVERVIEW,
+            lambda: self.notify(_SYNC_OVERVIEW, timeout=8),
+        )
+        for title, help_text in _SYNC_LEGEND:
+            yield SystemCommand(
+                title,
+                help_text,
+                lambda text=help_text: self.notify(text, timeout=6),
+                discover=False,
+            )
+
     def _action_cell(self, name: str) -> Text:
         action = self.actions.get(name, Action.KEEP)
         return Text(action.value, style=_ACTION_STYLES[action])
 
     def _branch_metric_cells(self, b: BranchInfo | None) -> list[Text]:
-        """Local, Remote, Sync, Author, Age, Merged, Issue, Status.
+        """Local, Remote, Merged, Sync, Author, Age, Issue, Status.
 
         Shared by the Branches and Worktrees tables so the two cannot drift.
         WT is Branches-only: every worktree row already is one.
@@ -738,20 +767,20 @@ class CleanupApp(App[Outcome | None]):
                 Text(""),
                 Text(""),
                 Text(""),
-                Text("—"),
-                Text("—"),
                 Text(""),
+                Text("—"),
+                Text("—"),
                 Text("—"),
                 Text("—"),
             ]
         age_style = "yellow" if b.age_days >= self._archive_age_days else ""
         return [
-            Text("●" if b.has_local else ""),
-            Text("●" if b.has_remote else ""),
+            Text("✓" if b.has_local else "", style="green"),
+            Text("✓" if b.has_remote else "", style="green"),
+            Text("✓" if b.merged else "", style="green"),
             Text(_sync_text(b)),
             Text(b.author_name),
             Text(format_age(b.age_days), style=age_style),
-            Text("✓" if b.merged else "", style="green"),
             Text(b.issue_key or "—"),
             Text(
                 b.issue.status if b.issue else "—",
@@ -763,17 +792,17 @@ class CleanupApp(App[Outcome | None]):
         name = Text(b.name + ("*" if b.is_current else ""))
         if b.is_current or b.is_default or b.is_protected:
             name.stylize("dim")
-        local, remote, sync, author, age, merged, issue, status = self._branch_metric_cells(b)
+        local, remote, merged, sync, author, age, issue, status = self._branch_metric_cells(b)
         return [
             self._action_cell(b.name),
             name,
             local,
             remote,
-            Text("●" if b.has_worktree else ""),
+            Text("✓" if b.has_worktree else "", style="green"),
+            merged,
             sync,
             author,
             age,
-            merged,
             issue,
             status,
         ]
@@ -1248,7 +1277,7 @@ class CleanupApp(App[Outcome | None]):
             "filter",
             self._filter_spec,
             # kept under 80 chars so it survives on a narrow terminal
-            "filter: mine,author=sam|chris, status=/status!= (unset/set); blank clears",
+            "filter: mine,merged=true,!local, author=sam|chris; blank clears",
         )
 
     def action_open_sort(self) -> None:
