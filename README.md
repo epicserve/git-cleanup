@@ -30,16 +30,34 @@ before deciding its fate.
 
 ### Worktrees
 
-- **remove** — runs `git worktree remove`, with `--force` when the worktree has
-  uncommitted changes. A worktree whose directory is already gone is cleared with
-  `git worktree prune` instead. Worktrees whose branch is merged or issue-done come
-  pre-marked, as do broken entries — but a worktree with uncommitted changes never does.
+- **remove** — runs `git worktree remove` (or [`wt remove`](#with-worktrunk-installed)),
+  with `--force` when the worktree has uncommitted changes. A worktree whose directory
+  is already gone is cleared with `git worktree prune` instead. Worktrees whose branch
+  is merged or issue-done come pre-marked, as do broken entries — but a worktree with
+  uncommitted changes never does.
 - **keep** — the default; nothing happens.
 
 Removing a worktree **never deletes its branch** — do that on the Branches tab. Worktree
 removals run **before** branch deletions, so marking both in one session works: `git
 branch -d` refuses a branch that is checked out anywhere, and the review screen tells you
 which deletions are waiting on which removal.
+
+#### With Worktrunk installed
+
+If [Worktrunk](https://worktrunk.dev) (`wt`) is on your `PATH`, **remove** runs
+`wt remove --no-delete-branch --foreground` instead of `git worktree remove`, so the
+repo's `pre-remove` hooks run first. That matters when a worktree has Docker containers
+or other tooling that leaves files git can't delete (`Permission denied`) until a hook
+tears them down. `--dry-run` says when this will happen.
+
+- If a hook fails, or a project hook has never been approved, the worktree is left in
+  place and the error from `wt` is shown. git-cleanup does not fall back to plain git,
+  which would skip the hook. Approve project hooks once with `wt config approvals add`;
+  git-cleanup never passes `--yes`, so it can't run hooks you haven't reviewed.
+- The branch is still never deleted: `--no-delete-branch` overrides `wt remove`'s own
+  default of deleting merged branches.
+- Without Worktrunk, nothing changes. On Windows `wt` is Windows Terminal, so
+  Worktrunk is not used there.
 
 ### Stashes
 
