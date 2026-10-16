@@ -389,6 +389,66 @@ def test_dry_run_leaves_worktrees_alone(
     assert "would run git worktree prune" in out
 
 
+def test_worktree_removed_through_wt_before_branch_deleted(
+    repo_with_worktrees, no_tracker_config, monkeypatch, drive_tui, capsys, fake_wt
+):
+    """Same ordering guarantee as above, with Worktrunk doing the removal."""
+    monkeypatch.chdir(repo_with_worktrees)
+
+    def choose(branches, worktrees):
+        by_name = {b.name: b for b in branches}
+        return Outcome(
+            branches=[(by_name["abc-123-fix-login"], Action.DELETE_LOCAL)],
+            worktrees=[(named(worktrees, "wt-merged"), WorktreeAction.REMOVE)],
+        )
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+
+    [call] = fake_wt.calls()
+    assert call["args"][:3] == ["remove", "--no-delete-branch", "--foreground"]
+    assert not (repo_with_worktrees.parent / "wt-merged").exists()
+    assert git("branch", "--list", "abc-123-fix-login", cwd=repo_with_worktrees) == ""
+    assert "could not delete local" not in capsys.readouterr().out
+
+
+def test_wt_failure_is_reported_not_raised(
+    repo_with_worktrees, no_tracker_config, monkeypatch, drive_tui, capsys, fake_wt
+):
+    """wt echoes hook commands in stderr, so a `[...]` in one must not be read as
+    rich markup (an unmatched closing tag raises MarkupError)."""
+    monkeypatch.chdir(repo_with_worktrees)
+    fake_wt.configure(exit="1", stderr="pre-remove command failed: rm [/nope]")
+
+    def choose(branches, worktrees):
+        return Outcome(worktrees=[(named(worktrees, "wt-merged"), WorktreeAction.REMOVE)])
+
+    drive_tui(choose)
+    assert run_cli("--config", str(no_tracker_config)) == 0
+
+    out = " ".join(capsys.readouterr().out.split())  # rich wraps the long tmp path
+    assert "could not remove worktree" in out
+    assert "rm [/nope]" in out
+    assert (repo_with_worktrees.parent / "wt-merged").exists()
+
+
+def test_dry_run_says_when_wt_will_run_hooks(
+    repo_with_worktrees, no_tracker_config, monkeypatch, drive_tui, capsys, fake_wt
+):
+    monkeypatch.chdir(repo_with_worktrees)
+
+    def choose(branches, worktrees):
+        return Outcome(worktrees=[(named(worktrees, "wt-merged"), WorktreeAction.REMOVE)])
+
+    drive_tui(choose)
+    assert run_cli("--dry-run", "--config", str(no_tracker_config)) == 0
+
+    out = " ".join(capsys.readouterr().out.split())  # rich wraps the long tmp path
+    assert "with wt remove (runs the repo's pre-remove hooks)" in out
+    assert fake_wt.calls() == []
+    assert (repo_with_worktrees.parent / "wt-merged").exists()
+
+
 def test_dirty_worktree_removed_with_force(
     repo_with_worktrees, no_tracker_config, monkeypatch, drive_tui
 ):
