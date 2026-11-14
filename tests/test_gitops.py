@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from git_cleanup import gitops
-from tests.conftest import LOCK_REASON, ME, OTHER, git
+from tests.conftest import LOCK_REASON, ME, OTHER, REAL_WORKTRUNK_AVAILABLE, git
 
 
 def test_in_git_repo(repo: Path, tmp_path: Path):
@@ -242,6 +242,87 @@ def test_remove_worktree_refuses_main(repo_with_worktrees: Path):
     with pytest.raises(gitops.GitError):
         gitops.remove_worktree(repo_with_worktrees, force=True, cwd=repo_with_worktrees)
     assert (repo_with_worktrees / "base.txt").exists()
+
+
+def test_worktrunk_unavailable_when_not_on_path(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PATH", str(tmp_path))  # nothing in it
+    assert REAL_WORKTRUNK_AVAILABLE() is False
+
+
+def test_worktrunk_available_for_the_worktrunk_banner(fake_wt):
+    assert gitops.worktrunk_available() is True
+
+
+def test_worktrunk_unavailable_for_some_other_wt(fake_wt):
+    """`wt` is Windows Terminal's launcher on Windows; the banner is the proof."""
+    fake_wt.configure(banner="Windows Terminal 1.21")
+    assert gitops.worktrunk_available() is False
+
+
+def test_worktrunk_unavailable_when_version_fails(fake_wt):
+    fake_wt.configure(version_exit="2")
+    assert gitops.worktrunk_available() is False
+
+
+def test_remove_worktree_via_wt_keeps_branch_and_waits(repo_with_worktrees: Path, fake_wt):
+    """--no-delete-branch and --foreground are not optional: wt would otherwise
+    delete the merged branch and return before the directory is gone."""
+    worktree = repo_with_worktrees.parent / "wt-merged"
+    gitops.remove_worktree(worktree, cwd=repo_with_worktrees)
+
+    [call] = fake_wt.calls()
+    assert call["args"] == ["remove", "--no-delete-branch", "--foreground", str(worktree)]
+    assert Path(call["cwd"]).resolve() == repo_with_worktrees.resolve()
+    assert not worktree.exists()
+    assert git("branch", "--list", "abc-123-fix-login", cwd=repo_with_worktrees) != ""
+
+
+def test_remove_worktree_via_wt_forces_only_when_asked(repo_with_worktrees: Path, fake_wt):
+    worktree = repo_with_worktrees.parent / "wt-dirty"
+    gitops.remove_worktree(worktree, force=True, cwd=repo_with_worktrees)
+
+    [call] = fake_wt.calls()
+    assert call["args"] == [
+        "remove",
+        "--no-delete-branch",
+        "--foreground",
+        "--force",
+        str(worktree),
+    ]
+    assert not worktree.exists()
+
+
+def test_remove_worktree_via_wt_never_passes_yes(repo_with_worktrees: Path, fake_wt):
+    """--yes would run a repo's unreviewed project hooks."""
+    gitops.remove_worktree(repo_with_worktrees.parent / "wt-merged", cwd=repo_with_worktrees)
+    gitops.remove_worktree(
+        repo_with_worktrees.parent / "wt-dirty", force=True, cwd=repo_with_worktrees
+    )
+
+    for call in fake_wt.calls():
+        assert not {"--yes", "-y", "--no-hooks"} & set(call["args"])
+
+
+def test_remove_worktree_via_wt_failure_raises_without_falling_back(
+    repo_with_worktrees: Path, fake_wt
+):
+    """A refused hook must not be bypassed by quietly running git instead."""
+    fake_wt.configure(exit="1", stderr="pre-remove command failed: teardown")
+    worktree = repo_with_worktrees.parent / "wt-merged"
+    with pytest.raises(gitops.GitError, match="pre-remove command failed: teardown"):
+        gitops.remove_worktree(worktree, cwd=repo_with_worktrees)
+    assert worktree.exists()
+    assert len(fake_wt.calls()) == 1
+
+
+def test_remove_worktree_uses_git_when_worktrunk_is_not_detected(
+    repo_with_worktrees: Path, fake_wt, monkeypatch
+):
+    monkeypatch.setattr(gitops, "worktrunk_available", lambda: False)
+    worktree = repo_with_worktrees.parent / "wt-merged"
+    gitops.remove_worktree(worktree, cwd=repo_with_worktrees)
+    assert fake_wt.calls() == []
+    assert not worktree.exists()
 
 
 def test_prune_worktrees_dry_run_then_real(repo_with_worktrees: Path):

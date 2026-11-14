@@ -7,6 +7,8 @@ import sys
 from functools import partial
 from pathlib import Path
 
+from rich.markup import escape
+
 from git_cleanup import __version__, gitops, planner, state, tui, ui
 from git_cleanup.config import Config, load_config
 from git_cleanup.core import scan_repo
@@ -140,16 +142,21 @@ def _remove_worktree(worktree: WorktreeInfo, *, dry_run: bool) -> bool:
     label = ui.format_worktree_path(worktree.path)
     force = worktree.needs_force
     if dry_run:
-        ui.dry_run_note(
-            f"remove worktree {label}" + (" (--force: uncommitted changes)" if force else "")
-        )
+        note = f"remove worktree {label}"
+        if force:
+            note += " (--force: uncommitted changes)"
+        if gitops.worktrunk_available():
+            note += " with wt remove (runs the repo's pre-remove hooks)"
+        ui.dry_run_note(note)
         return True
     try:
         gitops.remove_worktree(worktree.path, force=force)
         ui.info(f"  removed worktree [bold]{label}[/bold]")
         return True
     except GitError as exc:
-        ui.warn(f"could not remove worktree {label}: {exc}")
+        # escape: wt's stderr echoes hook commands, and a `[...]` in one would
+        # otherwise be parsed as rich markup
+        ui.warn(f"could not remove worktree {label}: {escape(str(exc))}")
         return False
 
 

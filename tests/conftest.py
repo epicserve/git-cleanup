@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from git_cleanup import gitops
 from git_cleanup.gitops import RawStash, RawWorktree
+
+# Captured before the autouse fixture below replaces it.
+REAL_WORKTRUNK_AVAILABLE = gitops.worktrunk_available
 
 ME = "brent@example.com"
 OTHER = "sarah@example.com"
@@ -151,6 +158,70 @@ def repo_with_worktrees(repo: Path) -> Path:
     shutil.rmtree(outside / "wt-gone")
 
     return repo
+
+
+@pytest.fixture(autouse=True)
+def no_worktrunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite on plain `git worktree remove`, whatever is installed here.
+
+    A developer's machine usually has the real `wt`, and its pre-remove hooks
+    would then run against these throwaway repos. Tests of the Worktrunk path
+    opt back in with `fake_wt`.
+    """
+    monkeypatch.setattr(gitops, "worktrunk_available", lambda: False)
+
+
+_FAKE_WT = """#!{python}
+import json, os, subprocess, sys
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print(os.environ.get("FAKE_WT_BANNER", "wt v0.0.0-test"))
+    sys.exit(int(os.environ.get("FAKE_WT_VERSION_EXIT", "0")))
+with open(os.environ["FAKE_WT_LOG"], "a") as log:
+    log.write(json.dumps({{"args": args, "cwd": os.getcwd()}}) + "\\n")
+code = int(os.environ.get("FAKE_WT_EXIT", "0"))
+if code:
+    print(os.environ.get("FAKE_WT_STDERR", "wt failed"), file=sys.stderr)
+    sys.exit(code)
+# Stand in for the removal itself, so ordering against branch deletion is real.
+force = ["--force"] if "--force" in args else []
+sys.exit(subprocess.run(["git", "worktree", "remove", *force, args[-1]]).returncode)
+"""
+
+
+class FakeWt:
+    """A `wt` stand-in first on PATH that records how it was called."""
+
+    def __init__(self, log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._log = log
+        self._monkeypatch = monkeypatch
+
+    def calls(self) -> list[dict]:
+        if not self._log.exists():
+            return []
+        return [json.loads(line) for line in self._log.read_text().splitlines()]
+
+    def configure(self, **env: str) -> None:
+        for name, value in env.items():
+            self._monkeypatch.setenv(f"FAKE_WT_{name.upper()}", value)
+
+
+@pytest.fixture
+def fake_wt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeWt:
+    """Install a fake Worktrunk and switch real detection back on."""
+    if sys.platform == "win32":
+        pytest.skip("worktrunk_available is always False on Windows")
+    bin_dir = tmp_path / "fake-wt-bin"
+    bin_dir.mkdir()
+    exe = bin_dir / "wt"
+    exe.write_text(_FAKE_WT.format(python=sys.executable))
+    exe.chmod(0o755)
+    log = tmp_path / "fake-wt.log"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_WT_LOG", str(log))
+    monkeypatch.setattr(gitops, "worktrunk_available", REAL_WORKTRUNK_AVAILABLE)
+    return FakeWt(log, monkeypatch)
 
 
 def raw_worktree(path: str, branch: str | None = None, **flags) -> RawWorktree:

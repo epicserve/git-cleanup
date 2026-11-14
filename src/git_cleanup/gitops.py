@@ -16,7 +16,9 @@ snapshots, and both number in the single digits for most repos.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -338,12 +340,75 @@ def worktree_dirty_count(path: Path) -> int | None:
     return len(out.splitlines())
 
 
+_WORKTRUNK_VERSION_RE = re.compile(r"^wt v\d")
+
+
+def worktrunk_available() -> bool:
+    """True when `wt` on PATH is Worktrunk (https://worktrunk.dev).
+
+    `wt` alone proves nothing, so the `--version` banner has to say so. On Windows
+    it is Windows Terminal's launcher, and running it would open a window.
+    """
+    if sys.platform == "win32":
+        return False
+    exe = shutil.which("wt")
+    if exe is None:
+        return False
+    try:
+        result = subprocess.run(
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and _WORKTRUNK_VERSION_RE.match(result.stdout) is not None
+
+
+def _worktrunk_remove(path: Path, *, force: bool, cwd: Path | None) -> None:
+    # --no-delete-branch: wt deletes a merged branch by default; remove_worktree
+    #   promises never to.
+    # --foreground: wt removes in the background by default, but callers delete
+    #   the branch next and git refuses while the worktree directory is there.
+    # No --yes: it would approve a repo's project hooks that the user never
+    #   reviewed. Without it wt refuses (exit 1, worktree kept) until they run
+    #   `wt config approvals add`, and its stderr says so.
+    # stdin is closed so wt can never block on a prompt we have captured away.
+    args = ["wt", "remove", "--no-delete-branch", "--foreground"]
+    if force:
+        args.append("--force")
+    args.append(str(path))
+    result = subprocess.run(
+        args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise GitError(f"{' '.join(args)} failed: {result.stderr.strip()}")
+
+
 def remove_worktree(path: Path, *, force: bool = False, cwd: Path | None = None) -> None:
     """Remove a worktree's directory and bookkeeping. Never touches its branch.
+
+    Goes through `wt remove` when Worktrunk is installed, so the repo's
+    pre-remove hooks run first (e.g. tearing down per-worktree Docker containers
+    whose root-owned files make a bare `git worktree remove` fail with
+    "Permission denied"). Otherwise it is plain `git worktree remove`. A failed
+    `wt remove` raises rather than falling back to git: that would skip the very
+    hook that just refused.
 
     Only ever a single --force (for uncommitted changes); removing a locked
     worktree would need -f -f, and callers filter locked worktrees out instead.
     """
+    if worktrunk_available():
+        _worktrunk_remove(path, force=force, cwd=cwd)
+        return
     args = ["worktree", "remove"]
     if force:
         args.append("--force")
